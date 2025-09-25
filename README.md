@@ -1,4 +1,4 @@
-# LanHAR: LLM-based Human Activity Recognition
+# SemanticHAR: LLM-based Human Activity Recognition
 
 This project is an implementation of the paper "LanHAR: A Novel System for Cross-Dataset Human Activity Recognition Using LLM-Generated Semantic Interpretations". It uses LLMs to generate semantic interpretations of sensor data and performs cross-dataset human activity recognition.
 
@@ -11,27 +11,6 @@ This project is an implementation of the paper "LanHAR: A Novel System for Cross
 - **Contrastive Learning**: Align sensor and text embeddings
 - **UCI ADL Dataset Support**: Activity recognition based on ambient sensor data
 
-## 📁 Project Structure
-
-```
-semantic/
-├── main.py                           # Main execution script
-├── config.py                         # System configuration
-├── create_dummy_interpretations.py   # Test dummy data generation
-├── requirements.txt                  # Required packages
-├── dataloader/
-│   └── data_loader.py               # UCI ADL data loading and preprocessing
-├── llm/
-│   └── semantic_generator.py        # LLM-based semantic interpretation generation
-├── models/
-│   ├── text_encoder.py              # BERT-based text encoder (includes training logic)
-│   └── sensor_encoder.py            # Transformer-based sensor encoder
-├── evaluation/
-│   └── text_encoder_evaluator.py    # Text encoder evaluation
-├── outputs/                         # Generated results storage
-├── checkpoints/                     # Model checkpoint storage
-└── data/                           # Dataset storage
-```
 
 ## 🛠️ Installation and Setup
 
@@ -79,6 +58,9 @@ python main.py --mode evaluate
 
 ```bash
 python main.py --mode train \
+    --dataset UCI_ADL \
+    --window_size 60 \
+    --overlap 0.8 \
     --max_windows 1000 \
     --max_activities 20 \
     --epochs 20 \
@@ -86,75 +68,118 @@ python main.py --mode train \
     --learning_rate 1e-5
 ```
 
+### 5. Command Line Arguments
+
+| Argument | Description | Default | Choices |
+|----------|-------------|---------|---------|
+| `--mode` | Execution mode | `train` | `train`, `generate`, `evaluate` |
+| `--dataset` | Dataset to use | `UCI_ADL` | `UCI_ADL`, `MARBLE` |
+| `--window_size` | Time window size (seconds) | `60` | Any integer |
+| `--overlap` | Window overlap ratio | `0.8` | 0.0-1.0 |
+| `--batch_size` | Training batch size | `32` | Any integer |
+| `--epochs` | Number of training epochs | `100` | Any integer |
+| `--learning_rate` | Learning rate | `2e-5` | Any float |
+| `--max_windows` | Max windows per home | `10000` | Any integer |
+| `--max_activities` | Max activities for interpretation | `20` | Any integer |
+| `--api_key` | OpenAI API key (optional) | `None` | Your API key |
+
 ## 📊 Supported Datasets
 
 - **UCI ADL**: Ambient sensor data (PIR, Magnetic, Pressure, Flush, Electric sensors)
-- **MARBLE**: IMU sensor data (accelerometer, gyroscope) - Future support planned
+- **MARBLE**: IMU sensor data (accelerometer, gyroscope, magnetometer, barometer, smartphone)
+
+## 🏗️ Project Structure
+
+```
+semantic/
+├── main.py                     # Main execution script
+├── config.py                   # Configuration settings
+├── requirements.txt            # Python dependencies
+├── README.md                   # Project documentation
+├── data/                      # Dataset directory
+│   ├── MARBLE/                # MARBLE dataset (IMU sensors)
+│   └── UCI ADL Binary Dataset/ # UCI ADL dataset (ambient sensors)
+├── dataloader/                # Data loading modules
+│   └── data_loader.py         # Dataset loading and preprocessing
+├── llm/                       # LLM semantic generation
+│   └── semantic_generator.py  # Semantic interpretation generation
+├── models/                     # Model implementations
+│   └── text_encoder.py        # Text encoder and trainer
+├── evaluation/                # Model evaluation
+│   └── text_encoder_evaluator.py # Text encoder evaluation
+├── outputs/                   # Generated outputs
+│   ├── time_windows.json     # Generated time windows
+│   └── semantic_interpretations.json # LLM interpretations
+└── checkpoints/              # Model checkpoints
+    ├── text_encoder.pth      # Trained text encoder
+    └── text_decoder.pth      # Trained text decoder
+```
 
 ## 🔧 System Architecture
 
 ### 1. Data Loading and Preprocessing (`dataloader/data_loader.py`)
-- UCI ADL data parsing and preprocessing
+- **UCI ADL**: Ambient sensor data parsing and preprocessing
+- **MARBLE**: IMU sensor data loading and preprocessing
 - Time window generation (default 60 seconds, 80% overlap)
-- Train/Validation/Test split
+- Train/Validation/Test split maintaining temporal order
+- Data normalization and scaling
 
 ### 2. LLM Semantic Interpretation Generation (`llm/semantic_generator.py`)
-- Sensor data statistical analysis
-- 4-stage prompt structure (Data Introduction, Data Analysis, Knowledge, Task Introduction)
-- Activity label interpretation (General Description, Ambient Sensor Patterns, Environmental Context)
-- Quality improvement through iterative regeneration
+- **OpenAI GPT Integration**: Semantic interpretation generation
+- **4-Part Prompt Structure**: Data Introduction, Data Analysis, Knowledge, Task Introduction
+- **3-Part Activity Prompt**: General Description, Ambient Sensor Patterns, Environmental Context
+- **Window2Text Approach**: Subject-perspective descriptions from sensor events
+- **Iterative Re-generation**: Quality control and filtering
+- **Batch Processing**: Efficient processing of large datasets
 
-### 3. Text Encoder (BERT) (`models/text_encoder.py`)
-- Convert semantic interpretations to embeddings
-- Sensor-activity alignment through contrastive learning
-- Maintain language model characteristics through reconstruction tasks
+### 3. Text Encoder Training (`models/text_encoder.py`)
+- **BERT-based Text Encoder**: `bert-base-uncased` model
+- **Contrastive Learning**: Alignment loss for sensor-activity matching
+- **Reconstruction Loss**: TextDecoder for language model retention
+- **Early Stopping**: Validation-based training termination
+- **GPU Acceleration**: CUDA support for faster training
 
-### 4. Sensor Encoder (Transformer) (`models/sensor_encoder.py`)
-- Map sensor data to language space
-- Positional encoding and multi-head attention
-- Global average pooling
-
-### 5. Evaluation and Visualization (`evaluation/text_encoder_evaluator.py`)
-- Alignment quality evaluation
-- Reconstruction quality evaluation
-- t-SNE visualization
-- Similarity matrix heatmap
+### 4. Model Evaluation (`evaluation/text_encoder_evaluator.py`)
+- **Alignment Quality**: Cosine similarity metrics
+- **Reconstruction Quality**: Cross-entropy loss assessment
+- **t-SNE Visualization**: High-dimensional embedding visualization
+- **Similarity Matrix**: Heatmap analysis of embeddings
 
 ## 📈 Training Process
 
-1. **Data Preparation**: Load UCI ADL dataset and generate time windows
+1. **Data Preparation**: Load dataset (UCI ADL or MARBLE) and generate time windows
 2. **Semantic Interpretation Generation**: LLM-based interpretation of sensor data and activity labels
-3. **Text Encoder Training**: BERT-based embedding learning (batch size 32)
-4. **Evaluation**: Alignment quality, reconstruction quality, visualization
-5. **Sensor Encoder Training**: Sensor-text alignment learning (future implementation)
+3. **Text Encoder Training**: BERT-based encoder with contrastive learning
+4. **Model Evaluation**: Comprehensive evaluation with visualization
+5. **Output Generation**: Save trained models and evaluation results
 
 ## 🎯 Key Features
 
 ### LLM Semantic Interpretation
-- Statistical analysis of ambient sensor data characteristics
-- Subject-perspective natural language description generation using Window2Text approach
-- Systematic interpretation generation through 4-stage prompt structure
-- Quality improvement through iterative regeneration
+- **Statistical Analysis**: Ambient sensor data characteristics
+- **Window2Text Approach**: Subject-perspective natural language descriptions
+- **4-Part Prompt Structure**: Systematic interpretation generation
+- **Iterative Re-generation**: Quality control and filtering
 
 ### Contrastive Learning
-- Alignment between sensor and activity interpretations
-- Alignment Loss: Sensor-activity embedding alignment
-- Category Contrastive Loss: Category-wise grouping
-- Activity Contrastive Loss: Activity-wise grouping
-- Reconstruction Loss: Text reconstruction
+- **Alignment Loss**: Sensor-activity embedding alignment
+- **Category Contrastive Loss**: Category-wise grouping
+- **Activity Contrastive Loss**: Activity-wise grouping
+- **Reconstruction Loss**: TextDecoder for language model retention
 
 ### Evaluation and Visualization
-- Alignment quality evaluation (accuracy, margin)
-- Reconstruction quality evaluation (loss, accuracy)
-- Embedding visualization through t-SNE
-- Similarity matrix heatmap
+- **Alignment Quality**: Accuracy and margin metrics
+- **Reconstruction Quality**: Loss and accuracy assessment
+- **t-SNE Visualization**: High-dimensional embedding visualization
+- **Similarity Matrix**: Heatmap analysis of embeddings
 
 ## 📊 Performance Metrics
 
 - **Alignment Accuracy**: Sensor-activity embedding alignment quality
 - **Reconstruction Loss**: Text reconstruction quality
 - **Similarity Matrix**: Inter-embedding similarity analysis
-- **Visualization**: Embedding space visualization through t-SNE
+- **t-SNE Visualization**: High-dimensional embedding space visualization
+- **GPU Utilization**: CUDA acceleration for faster training
 
 ## 🔍 Usage Examples
 
@@ -193,10 +218,11 @@ results = evaluator.comprehensive_evaluation()
 
 ## 🚨 Important Notes
 
-1. **API Key**: A valid API key is required to use OpenAI API.
-2. **Memory**: Sufficient memory is required for large datasets.
-3. **GPU**: Using CUDA-enabled GPU significantly improves training speed.
-4. **Data**: UCI ADL dataset must be placed in the correct path.
+1. **API Key**: Set `OPENAI_API_KEY` environment variable for LLM integration
+2. **Memory**: Sufficient memory required for large datasets (recommend 16GB+)
+3. **GPU**: CUDA-enabled GPU significantly improves training speed
+4. **Data**: Datasets must be placed in the correct `data/` directory
+5. **Dependencies**: Install all requirements with `pip install -r requirements.txt`
 
 ## 📁 Output Files
 
@@ -205,7 +231,8 @@ results = evaluator.comprehensive_evaluation()
 - `outputs/text_encoder_evaluation.json`: Text encoder evaluation results
 - `outputs/embedding_visualization.png`: t-SNE visualization
 - `outputs/similarity_matrix.png`: Similarity matrix heatmap
-- `checkpoints/`: Trained model checkpoints
+- `checkpoints/text_encoder.pth`: Trained text encoder model
+- `checkpoints/text_decoder.pth`: Trained text decoder model
 
 ## 🆘 Troubleshooting
 
