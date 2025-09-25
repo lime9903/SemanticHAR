@@ -1,12 +1,12 @@
 """
-LanHAR System Configuration File
+SemanticHAR System Configuration File
 """
 import os
 import torch
 from dataclasses import dataclass
 
 @dataclass
-class LanHARConfig:
+class SemanticHARConfig:
     # Data Path
     marble_data_path: str = "/workspace/semantic/data/MARBLE"
     uci_adl_data_path: str = "/workspace/semantic/data/UCI ADL Binary Dataset"

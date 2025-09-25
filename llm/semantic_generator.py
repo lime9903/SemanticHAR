@@ -17,14 +17,14 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import LanHARConfig
+from config import SemanticHARConfig
 from dataloader.data_loader import load_sensor_data
 
 
 class SemanticGenerator:
     """LLM to generate semantic interpretations for sensor data"""
     
-    def __init__(self, config: LanHARConfig):
+    def __init__(self, config: SemanticHARConfig):
         self.config = config
         openai.api_key = os.getenv("OPENAI_API_KEY")
         

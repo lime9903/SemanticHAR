@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import math
 from typing import Dict, List, Tuple, Optional
 import numpy as np
-from config import LanHARConfig
+from config import SemanticHARConfig
 
 class PositionalEncoding(nn.Module):
     """Positional encoding"""
@@ -32,7 +32,7 @@ class PositionalEncoding(nn.Module):
 class SensorEncoder(nn.Module):
     """Transformer-based sensor encoder"""
     
-    def __init__(self, config: LanHARConfig):
+    def __init__(self, config: SemanticHARConfig):
         super(SensorEncoder, self).__init__()
         self.config = config
         
@@ -107,7 +107,7 @@ class SensorEncoder(nn.Module):
 class SensorEncoderTrainer:
     """Sensor encoder trainer"""
     
-    def __init__(self, config: LanHARConfig, text_encoder):
+    def __init__(self, config: SemanticHARConfig, text_encoder):
         self.config = config
         self.device = torch.device(config.device)
         
@@ -194,7 +194,7 @@ class SensorEncoderTrainer:
 class MultiScaleSensorEncoder(nn.Module):
     """multi-scale sensor encoder (improved version)"""
     
-    def __init__(self, config: LanHARConfig):
+    def __init__(self, config: SemanticHARConfig):
         super(MultiScaleSensorEncoder, self).__init__()
         self.config = config
         
@@ -299,7 +299,7 @@ class MultiScaleSensorEncoder(nn.Module):
 class SensorEncoderWithAttention(nn.Module):
     """sensor encoder with attention mechanism"""
     
-    def __init__(self, config: LanHARConfig):
+    def __init__(self, config: SemanticHARConfig):
         super(SensorEncoderWithAttention, self).__init__()
         self.config = config
         

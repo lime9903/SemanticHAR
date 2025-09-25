@@ -105,8 +105,6 @@ semantic/
 │   └── semantic_generator.py  # Semantic interpretation generation
 ├── models/                     # Model implementations
 │   └── text_encoder.py        # Text encoder and trainer
-├── evaluation/                # Model evaluation
-│   └── text_encoder_evaluator.py # Text encoder evaluation
 ├── outputs/                   # Generated outputs
 │   ├── time_windows.json     # Generated time windows
 │   └── semantic_interpretations.json # LLM interpretations
@@ -139,7 +137,8 @@ semantic/
 - **Early Stopping**: Validation-based training termination
 - **GPU Acceleration**: CUDA support for faster training
 
-### 4. Model Evaluation (`evaluation/text_encoder_evaluator.py`)
+### 4. Model Evaluation (`models/text_encoder.py`)
+- **TextEncoderEvaluator**: Comprehensive evaluation class
 - **Alignment Quality**: Cosine similarity metrics
 - **Reconstruction Quality**: Cross-entropy loss assessment
 - **t-SNE Visualization**: High-dimensional embedding visualization
@@ -200,8 +199,7 @@ python main.py --mode evaluate
 
 ```python
 from llm.semantic_generator import SemanticGenerator
-from models.text_encoder import TextEncoder
-from evaluation.text_encoder_evaluator import TextEncoderEvaluator
+from models.text_encoder import TextEncoder, TextEncoderEvaluator
 
 # LLM Generator
 generator = SemanticGenerator()

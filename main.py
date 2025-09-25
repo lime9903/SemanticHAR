@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LanHAR System Main Execution File
+SemanticHAR System Main Execution File
 """
 import os
 import sys
@@ -13,7 +13,7 @@ from datetime import datetime
 # Add project root to Python path
 sys.path.append('/workspace/semantic')
 
-from config import LanHARConfig, OPENAI_API_KEY
+from config import SemanticHARConfig, OPENAI_API_KEY
 from dataloader.data_loader import load_sensor_data
 from llm.semantic_generator import SemanticGenerator
 from models.text_encoder import TextEncoder
@@ -45,7 +45,7 @@ def setup_environment():
     print("Output directories created")
 
 
-def save_time_windows(sensor_data: Dict, config: LanHARConfig) -> str:
+def save_time_windows(sensor_data: Dict, config: SemanticHARConfig) -> str:
     """Save time windows to JSON file"""
     print("=" * 50)
     print("Step 1: Save Time Windows")
@@ -102,14 +102,14 @@ def save_time_windows(sensor_data: Dict, config: LanHARConfig) -> str:
     return time_windows_file
 
 
-def evaluate_text_encoder(config: LanHARConfig, text_encoder: TextEncoder, interpretations_file: str):
+def evaluate_text_encoder(config: SemanticHARConfig, text_encoder: TextEncoder, interpretations_file: str):
     """Evaluate text encoder performance and create visualizations"""
     print("=" * 50)
     print("Step 4: Text Encoder Evaluation")
     print("=" * 50)
     
     try:
-        from evaluation.text_encoder_evaluator import TextEncoderEvaluator
+        from models.text_encoder import TextEncoderEvaluator
         
         # Create evaluator
         evaluator = TextEncoderEvaluator(config, text_encoder=text_encoder)
@@ -147,10 +147,10 @@ def evaluate_text_encoder(config: LanHARConfig, text_encoder: TextEncoder, inter
         return None
 
 
-def train_lanhar(config: LanHARConfig, max_windows_per_home: int = None, max_activity_interpretations: int = 20):
-    """LanHAR System Training Pipeline"""
+def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, max_activity_interpretations: int = 20):
+    """SemanticHAR System Training Pipeline"""
     print("=" * 60)
-    print("LanHAR System Training Pipeline")
+    print("SemanticHAR System Training Pipeline")
     print("=" * 60)
     
     # Step 1: Load sensor data
@@ -294,7 +294,7 @@ def train_lanhar(config: LanHARConfig, max_windows_per_home: int = None, max_act
     # Step 4: Evaluate text encoder
     evaluation_results = evaluate_text_encoder(config, text_encoder, interpretations_file)
     
-    print("\nLanHAR System Training Pipeline Completed!")
+    print("\nSemanticHAR System Training Pipeline Completed!")
     print("=" * 60)
     
     return text_encoder, sensor_data, evaluation_results
@@ -303,10 +303,10 @@ def train_lanhar(config: LanHARConfig, max_windows_per_home: int = None, max_act
 def main():
     """Main function"""
     print("=" * 60)
-    print("LanHAR System - Human Activity Recognition")
+    print("SemanticHAR System - Human Activity Recognition")
     print("=" * 60)
     
-    parser = argparse.ArgumentParser(description='LanHAR System')
+    parser = argparse.ArgumentParser(description='SemanticHAR System')
     parser.add_argument('--mode', type=str, default='train', 
                        choices=['train', 'generate', 'evaluate'],
                        help='Execution mode')
@@ -336,7 +336,7 @@ def main():
     setup_environment()
     
     # Load configuration
-    config = LanHARConfig()
+    config = SemanticHARConfig()
     
     # Override configuration with command line arguments
     if args.batch_size:
@@ -369,7 +369,7 @@ def main():
     print(f"  - Max activity interpretations: {config.max_activity_interpretations}")
     
     if args.mode == 'train':
-        print("\nStarting training LanHAR system...")
+        print("\nStarting training SemanticHAR system...")
         text_encoder, sensor_data, evaluation_results = train_lanhar(config, args.max_windows, args.max_activities)
         
         if text_encoder:
@@ -414,7 +414,7 @@ def main():
         # Evaluate text encoder
         print("\nEvaluating Text Encoder...")
         try:
-            from evaluation.text_encoder_evaluator import TextEncoderEvaluator
+            from models.text_encoder import TextEncoderEvaluator
             
             # Check model path
             model_path = "checkpoints/text_encoder_trained.pth"

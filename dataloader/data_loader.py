@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 import re
 
 sys.path.append('/workspace/semantic')
-from config import LanHARConfig
+from config import SemanticHARConfig
 
 def parse_datetime(series):
     # Handle datetime parsing with multiple format attempts
@@ -338,7 +338,7 @@ class SensorDataset:
     def get_activity_names(self):
         return self.activity_names
 
-def load_sensor_data(config: LanHARConfig, dataset_name: str, 
+def load_sensor_data(config: SemanticHARConfig, dataset_name: str, 
                     window_size_seconds: int = 60, overlap_ratio: float = 0.8) -> Dict[str, Dict[str, List[pd.DataFrame]]]:
     """Load sensor data as DataFrames and split into train/val/test with time windows for LLM processing"""
     
@@ -450,21 +450,3 @@ def _split_windows(windows: List[pd.DataFrame], train_ratio=0.7, val_ratio=0.15)
     test_windows = shuffled_windows[train_size + val_size:]
     
     return train_windows, val_windows, test_windows
-
-# ============================== Test Code ==============================
-if __name__ == "__main__":
-    config = LanHARConfig()
-    split_data = load_sensor_data(config, "UCI_ADL", window_size_seconds=60, overlap_ratio=0.8)
-    print("\nSplit sensor data with time windows:")
-    for home_id, splits in split_data.items():
-        print(f"\n{home_id}:")
-        for split_name, windows in splits.items():
-            print(f"  {split_name}: {len(windows)} windows")
-            if len(windows) > 0:
-                # Show sample window info
-                sample_window = windows[0]
-                activities = sample_window['activity'].unique()
-                print(f"    Sample window: {len(sample_window)} events, Activities: {activities[:3]}...")
-                print(f"    Time range: {sample_window['window_start'].iloc[0]} to {sample_window['window_end'].iloc[0]}")
-        print("-" * 50)
-# ============================== Test Code ==============================
