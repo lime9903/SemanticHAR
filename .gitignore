@@ -56,7 +56,7 @@ Thumbs.db
 
 # Project specific
 outputs/
-data/
+# data/  # Commented out to include data directory
 *.log
 *.out
 
