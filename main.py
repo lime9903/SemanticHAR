@@ -149,7 +149,7 @@ def evaluate_text_encoder(config: SemanticHARConfig, text_encoder: TextEncoder, 
 
 def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, max_activity_interpretations: int = 20):
     """SemanticHAR System Training Pipeline"""
-    print("=" * 60)
+    print('\n' + "=" * 60)
     print("SemanticHAR System Training Pipeline")
     print("=" * 60)
     
@@ -173,12 +173,12 @@ def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, ma
                     # Convert window info back to DataFrame format (simplified)
                     sensor_data[home_id][split] = windows
             
-            print(f"Time windows loaded from JSON successfully: {time_windows_file}")
+            print(f"✓ Time windows loaded from JSON successfully")
             print(f"   - Home A: {len(sensor_data['home_a']['train'])} train, {len(sensor_data['home_a']['val'])} val, {len(sensor_data['home_a']['test'])} test")
             print(f"   - Home B: {len(sensor_data['home_b']['train'])} train, {len(sensor_data['home_b']['val'])} val, {len(sensor_data['home_b']['test'])} test")
             
         except Exception as e:
-            print(f"⨺ Failed to load time windows from JSON: {e}")
+            print(f"  ⨺ Failed to load time windows from JSON: {e}")
             print("  Falling back to loading sensor data from scratch...")
             try:
                 sensor_data = load_sensor_data(
@@ -233,7 +233,7 @@ def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, ma
             activity_count = len([k for k, v in interpretations_data.get('activity_interpretations', {}).items() 
                                 if 'interpretation' in v and 'error' not in v])
             
-            print(f"Loaded {sensor_count} sensor interpretations and {activity_count} activity interpretations")
+            print(f"✓ Loaded {sensor_count} sensor interpretations and {activity_count} activity interpretations")
             
         except Exception as e:
             print(f"⨺ Failed to load semantic interpretations from JSON: {e}")
@@ -369,7 +369,6 @@ def main():
     print(f"  - Max activity interpretations: {config.max_activity_interpretations}")
     
     if args.mode == 'train':
-        print("\nStarting training SemanticHAR system...")
         text_encoder, sensor_data, evaluation_results = train_lanhar(config, args.max_windows, args.max_activities)
         
         if text_encoder:
