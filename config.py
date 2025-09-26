@@ -27,15 +27,15 @@ class SemanticHARConfig:
     
     # Training
     batch_size: int = 32
-    learning_rate: float = 2e-5
+    learning_rate: float = 1e-5  # Reduced from 2e-5 for more stable training
     num_epochs: int = 100
     temperature: float = 0.07
     early_stopping: bool = True
-    patience: int = 5
+    patience: int = 10  # Increased patience for more stable early stopping
     
     # Contrastive Learning
-    alpha: float = 1.0  # Contrastive Learning Weight
-    beta: float = 0.5   # Reconstruction Weight
+    alpha: float = 0.5  # Reduced contrastive learning weight
+    beta: float = 0.3   # Reduced reconstruction weight
     
     # LLM
     llm_model: str = "gpt-3.5-turbo"
