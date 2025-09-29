@@ -82,15 +82,20 @@ class TextDecoder(nn.Module):
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=config.sensor_encoder_hidden_dim,
             nhead=config.sensor_encoder_heads,
-            dim_feedforward=config.sensor_encoder_hidden_dim * 4,
-            dropout=0.1,
+            dim_feedforward=config.sensor_encoder_hidden_dim * 2,  # Reduced from *4
+            dropout=0.2,  # Increased dropout
             batch_first=True
         )
         
+        # Simplified decoder with fewer layers
         self.transformer_decoder = nn.TransformerDecoder(
             decoder_layer, 
             num_layers=config.sensor_encoder_layers
         )
+        
+        # Additional regularization layers
+        self.dropout = nn.Dropout(0.3)
+        self.layer_norm = nn.LayerNorm(config.sensor_encoder_hidden_dim)
         
         self.output_projection = nn.Linear(
             config.sensor_encoder_hidden_dim, 
@@ -117,6 +122,10 @@ class TextDecoder(nn.Module):
             memory.unsqueeze(1),
             tgt_mask=tgt_mask
         )
+        
+        # Additional regularization
+        decoder_output = self.dropout(decoder_output)
+        decoder_output = self.layer_norm(decoder_output)
         
         output = self.output_projection(decoder_output)
         return output
@@ -226,7 +235,7 @@ class TextEncoderTrainer:
             list(self.text_encoder.parameters()) + 
             list(self.text_decoder.parameters()),
             lr=config.learning_rate,
-            weight_decay=0.01
+            weight_decay=config.weight_decay
         )
         
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -269,17 +278,28 @@ class TextEncoderTrainer:
             sensor_embeddings, sensor_interpretations
         )
         
+        # Activity-side reconstruction loss (Sl -> H -> g_de -> Sl_hat)
+        activity_reconstruction_loss = self._compute_reconstruction_loss(
+            activity_embeddings, activity_interpretations
+        )
+        
+        # Combine reconstruction losses
+        total_reconstruction_loss = reconstruction_loss + activity_reconstruction_loss
+        
         total_loss = (
             alignment_loss + 
             self.config.alpha * (sensor_category_loss + activity_category_loss + activity_contrastive_loss) +
-            self.config.beta * reconstruction_loss
+            self.config.beta * total_reconstruction_loss
         )
         
         total_loss.backward()
+        
+        # Gradient clipping for stability
         torch.nn.utils.clip_grad_norm_(
             list(self.text_encoder.parameters()) + list(self.text_decoder.parameters()),
-            max_norm=1.0
+            max_norm=self.config.gradient_clip_norm
         )
+        
         self.optimizer.step()
         
         return {
@@ -288,7 +308,7 @@ class TextEncoderTrainer:
             'sensor_category_loss': sensor_category_loss.item(),
             'activity_category_loss': activity_category_loss.item(),
             'activity_contrastive_loss': activity_contrastive_loss.item(),
-            'reconstruction_loss': reconstruction_loss.item()
+            'reconstruction_loss': total_reconstruction_loss.item()
         }
     
     def _validation_step(self, sensor_interpretations: List[str], 
@@ -323,11 +343,18 @@ class TextEncoderTrainer:
             sensor_embeddings, sensor_interpretations
         )
         
+        # Activity-side reconstruction loss
+        activity_reconstruction_loss = self._compute_reconstruction_loss(
+            activity_embeddings, activity_interpretations
+        )
+        
+        total_reconstruction_loss = reconstruction_loss + activity_reconstruction_loss
+        
         # Total loss (same as training)
         total_loss = (
             alignment_loss + 
             self.config.alpha * (sensor_category_loss + activity_category_loss + activity_contrastive_loss) +
-            self.config.beta * reconstruction_loss
+            self.config.beta * total_reconstruction_loss
         )
         
         return total_loss
@@ -770,33 +797,33 @@ def test_text_encoder(text_encoder: TextEncoder, test_interpretations: List[str]
 
 
 class TextEncoderEvaluator:
-    """Text Encoder 학습 검증 클래스"""
+    """Text Encoder training validation class"""
     
     def __init__(self, config: SemanticHARConfig, text_encoder: Optional[TextEncoder] = None, model_path: Optional[str] = None):
         self.config = config
         self.device = torch.device(config.device)
         
-        # 모델 로드
+        # Model loading
         if text_encoder is not None:
             self.text_encoder = text_encoder
             self.text_decoder = TextDecoder(config).to(self.device)
-            print(f"✅ TextEncoder 객체를 직접 사용합니다.")
+            print(f"✓ TextEncoder object is used directly.")
         elif model_path and os.path.exists(model_path):
             self.text_encoder = TextEncoder(config).to(self.device)
             self.text_decoder = TextDecoder(config).to(self.device)
             self.load_model(model_path)
-            print(f"✅ 모델 로드 완료: {model_path}")
+            print(f"✓ Model loaded: {model_path}")
         else:
             self.text_encoder = TextEncoder(config).to(self.device)
             self.text_decoder = TextDecoder(config).to(self.device)
-            print("⚠️  모델 파일이 없습니다. 랜덤 초기화된 모델을 사용합니다.")
+            print("⨺ Model file not found. Randomly initialized model is used.")
         
-        # 평가 모드로 설정
+        # Evaluation mode
         self.text_encoder.eval()
         self.text_decoder.eval()
     
     def load_model(self, model_path: str):
-        """학습된 모델 로드"""
+        """Load trained model"""
         checkpoint = torch.load(model_path, map_location=self.device)
         if 'text_encoder' in checkpoint:
             self.text_encoder.load_state_dict(checkpoint['text_encoder'])
@@ -805,40 +832,40 @@ class TextEncoderEvaluator:
     
     def evaluate_alignment_quality(self, sensor_interpretations: List[str], 
                                  activity_interpretations: List[str]) -> Dict[str, float]:
-        """Sensor-Activity 정렬 품질 평가"""
-        print("🔍 Sensor-Activity 정렬 품질 평가 중...")
+        """Sensor-Activity alignment quality evaluation"""
+        print("⨠ Sensor-Activity alignment quality evaluation...")
         
-        # 데이터 길이 맞추기
+        # Data length matching
         min_length = min(len(sensor_interpretations), len(activity_interpretations))
         sensor_interpretations = sensor_interpretations[:min_length]
         activity_interpretations = activity_interpretations[:min_length]
         
         with torch.no_grad():
-            # 임베딩 생성
+            # Embedding generation
             sensor_embeddings = self.text_encoder(sensor_interpretations)
             activity_embeddings = self.text_encoder(activity_interpretations)
             
-            # 정규화
+            # Normalization
             sensor_embeddings = F.normalize(sensor_embeddings, p=2, dim=1)
             activity_embeddings = F.normalize(activity_embeddings, p=2, dim=1)
             
-            # 유사도 행렬 계산
+            # Similarity matrix calculation
             similarity_matrix = torch.matmul(sensor_embeddings, activity_embeddings.T)
             
-            # 대각선 요소 (정답 쌍)의 유사도
+            # Diagonal elements (correct pairs) similarity
             diagonal_similarities = torch.diag(similarity_matrix)
             
-            # 각 행에서 최고 유사도 (정답이 최고인지 확인)
+            # Maximum similarity in each row (check if correct is the highest)
             max_similarities, max_indices = torch.max(similarity_matrix, dim=1)
             
-            # 정답률 계산
+            # Accuracy calculation
             correct_predictions = (max_indices == torch.arange(len(sensor_interpretations), device=self.device)).float()
             accuracy = correct_predictions.mean().item()
             
-            # 평균 정답 쌍 유사도
+            # Average correct pair similarity
             avg_correct_similarity = diagonal_similarities.mean().item()
             
-            # 정답과 비정답 간 유사도 차이
+            # Difference in similarity between correct and incorrect
             off_diagonal_similarities = similarity_matrix - torch.diag(diagonal_similarities)
             avg_incorrect_similarity = off_diagonal_similarities.mean().item()
             
@@ -854,10 +881,10 @@ class TextEncoderEvaluator:
         }
     
     def evaluate_reconstruction_quality(self, texts: List[str]) -> Dict[str, float]:
-        """재구성 품질 평가"""
-        print("🔍 재구성 품질 평가 중...")
+        """Reconstruction quality evaluation"""
+        print("⨠ Reconstruction quality evaluation...")
         
-        # 임베딩 생성
+        # Embedding generation
         embeddings = self.text_encoder(texts)
         
         reconstruction_losses = []
@@ -865,7 +892,7 @@ class TextEncoderEvaluator:
         
         for i, text in enumerate(texts):
             try:
-                # 토큰화
+                # Tokenization
                 tokens = self.text_encoder.tokenizer.encode(
                     text, 
                     add_special_tokens=True, 
@@ -873,14 +900,14 @@ class TextEncoderEvaluator:
                     truncation=True
                 )
                 
-                # 재구성 시도
-                input_tokens = torch.tensor([tokens[:-1]], device=self.device)  # 마지막 토큰 제외
-                target_tokens = torch.tensor([tokens[1:]], device=self.device)   # 첫 토큰 제외
+                # Reconstruction attempt
+                input_tokens = torch.tensor([tokens[:-1]], device=self.device)  # Last token excluded
+                target_tokens = torch.tensor([tokens[1:]], device=self.device)   # First token excluded
                 
-                # 재구성
+                # Reconstruction
                 decoder_output = self.text_decoder(embeddings[i:i+1], input_tokens)
                 
-                # 손실 계산
+                # Loss calculation
                 loss = F.cross_entropy(
                     decoder_output.reshape(-1, decoder_output.size(-1)),
                     target_tokens.reshape(-1),
@@ -889,13 +916,13 @@ class TextEncoderEvaluator:
                 
                 reconstruction_losses.append(loss.item())
                 
-                # 정확도 계산 (간단한 버전)
+                # Accuracy calculation (simple version)
                 predicted_tokens = torch.argmax(decoder_output, dim=-1)
                 accuracy = (predicted_tokens == target_tokens).float().mean().item()
                 reconstruction_accuracies.append(accuracy)
                 
             except Exception as e:
-                print(f"재구성 오류 (텍스트 {i}): {e}")
+                print(f"Reconstruction error (text {i}): {e}")
                 reconstruction_losses.append(float('inf'))
                 reconstruction_accuracies.append(0.0)
         
@@ -910,28 +937,28 @@ class TextEncoderEvaluator:
                            activity_interpretations: List[str],
                            activities: List[str],
                            save_path: str = "outputs/embedding_visualization.png"):
-        """임베딩 시각화"""
-        print("📊 임베딩 시각화 생성 중...")
+        """Embedding visualization"""
+        print("⨠ Embedding visualization generating...")
         
-        # 데이터 길이 맞추기
+        # Data length matching
         min_length = min(len(sensor_interpretations), len(activity_interpretations))
         sensor_interpretations = sensor_interpretations[:min_length]
         activity_interpretations = activity_interpretations[:min_length]
         activities = activities[:min_length]
         
         with torch.no_grad():
-            # 임베딩 생성
+            # Embedding generation
             sensor_embeddings = self.text_encoder(sensor_interpretations)
             activity_embeddings = self.text_encoder(activity_interpretations)
         
-        # t-SNE로 차원 축소
+        # t-SNE dimension reduction
         all_embeddings = torch.cat([sensor_embeddings, activity_embeddings], dim=0)
         all_embeddings_np = all_embeddings.detach().cpu().numpy()
         
         tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, len(all_embeddings_np)-1))
         embeddings_2d = tsne.fit_transform(all_embeddings_np)
         
-        # 시각화
+        # Visualization
         plt.figure(figsize=(15, 10))
         
         # Sensor embeddings
@@ -944,7 +971,6 @@ class TextEncoderEvaluator:
         scatter2 = plt.scatter(activity_2d[:, 0], activity_2d[:, 1], 
                               c='red', alpha=0.6, s=50, label='Activity Interpretations')
         
-        # 연결선 그리기 (정답 쌍)
         for i in range(len(sensor_interpretations)):
             plt.plot([sensor_2d[i, 0], activity_2d[i, 0]], 
                     [sensor_2d[i, 1], activity_2d[i, 1]], 
@@ -956,38 +982,38 @@ class TextEncoderEvaluator:
         plt.legend()
         plt.grid(True, alpha=0.3)
         
-        # 저장
+        # Save
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"✅ 시각화 저장 완료: {save_path}")
+        print(f"✓ Visualization saved: {save_path}")
     
     def evaluate_similarity_matrix(self, sensor_interpretations: List[str], 
                                  activity_interpretations: List[str],
                                  save_path: str = "outputs/similarity_matrix.png"):
-        """유사도 행렬 시각화"""
-        print("📊 유사도 행렬 시각화 생성 중...")
+        """Similarity matrix visualization"""
+        print("⨠ Similarity matrix visualization generating...")
         
-        # 데이터 길이 맞추기
+        # Data length matching
         min_length = min(len(sensor_interpretations), len(activity_interpretations))
         sensor_interpretations = sensor_interpretations[:min_length]
         activity_interpretations = activity_interpretations[:min_length]
         
         with torch.no_grad():
-            # 임베딩 생성
+            # Embedding generation
             sensor_embeddings = self.text_encoder(sensor_interpretations)
             activity_embeddings = self.text_encoder(activity_interpretations)
             
-            # 정규화
+            # Normalization
             sensor_embeddings = F.normalize(sensor_embeddings, p=2, dim=1)
             activity_embeddings = F.normalize(activity_embeddings, p=2, dim=1)
             
-            # 유사도 행렬 계산
+            # Similarity matrix calculation
             similarity_matrix = torch.matmul(sensor_embeddings, activity_embeddings.T)
             similarity_matrix_np = similarity_matrix.detach().cpu().numpy()
         
-        # 시각화
+        # Visualization
         plt.figure(figsize=(10, 8))
         sns.heatmap(similarity_matrix_np, 
                    annot=True, 
@@ -1000,59 +1026,59 @@ class TextEncoderEvaluator:
         plt.xlabel('Activity Interpretations')
         plt.ylabel('Sensor Interpretations')
         
-        # 저장
+        # Save
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"✅ 유사도 행렬 저장 완료: {save_path}")
+        print(f"✓ Similarity matrix saved: {save_path}")
     
     def comprehensive_evaluation(self, interpretations_file: str, 
                               output_dir: str = "outputs") -> Dict:
-        """종합 평가"""
-        print("🚀 Text Encoder 종합 평가 시작...")
+        """Comprehensive evaluation"""
+        print("⨠ Text Encoder comprehensive evaluation starting...")
         
-        # 데이터 로드
+        # Data loading
         with open(interpretations_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        # Sensor interpretations 추출
+        # Sensor interpretations extraction
         sensor_interpretations = []
         activity_interpretations = []
         activities = []
         
         for home_id, home_data in data['sensor_interpretations'].items():
             for split, windows in home_data.items():
-                if split == 'train':  # train 데이터만 사용
+                if split == 'train':  # train data only
                     for window_id, window_data in windows.items():
                         if 'interpretation' in window_data:
                             sensor_interpretations.append(window_data['interpretation'])
                             activities.append(window_data['activity'])
         
-        # Activity interpretations 추출
+        # Activity interpretations extraction
         for activity, interpretation_data in data.get('activity_interpretations', {}).items():
             if 'interpretation' in interpretation_data:
                 activity_interpretations.append(interpretation_data['interpretation'])
         
-        # 데이터 수 제한 (평가용)
+        # Data limit (for evaluation)
         max_samples = min(50, len(sensor_interpretations), len(activity_interpretations))
         sensor_interpretations = sensor_interpretations[:max_samples]
         activities = activities[:max_samples]
         activity_interpretations = activity_interpretations[:max_samples]
         
-        print(f"📊 평가 데이터: {len(sensor_interpretations)}개 sensor, {len(activity_interpretations)}개 activity")
+        print(f" Evaluation data: {len(sensor_interpretations)} sensors, {len(activity_interpretations)} activities")
         
-        # 1. 정렬 품질 평가
+        # 1. Alignment quality evaluation
         alignment_results = self.evaluate_alignment_quality(
             sensor_interpretations, activity_interpretations
         )
         
-        # 2. 재구성 품질 평가
+        # 2. Reconstruction quality evaluation
         reconstruction_results = self.evaluate_reconstruction_quality(
-            sensor_interpretations[:10]  # 재구성은 일부만 테스트
+            sensor_interpretations[:10]  # Reconstruction is only tested for part
         )
         
-        # 3. 시각화
+        # 3. Visualization
         self.visualize_embeddings(
             sensor_interpretations, activity_interpretations, activities,
             os.path.join(output_dir, "embedding_visualization.png")
@@ -1063,7 +1089,7 @@ class TextEncoderEvaluator:
             os.path.join(output_dir, "similarity_matrix.png")
         )
         
-        # 결과 종합
+        # Comprehensive results
         results = {
             'alignment_quality': alignment_results,
             'reconstruction_quality': reconstruction_results,
@@ -1075,7 +1101,7 @@ class TextEncoderEvaluator:
             }
         }
         
-        # 결과 저장 (numpy arrays를 리스트로 변환)
+        # Results saving (numpy arrays to list)
         def convert_numpy_types(obj):
             if isinstance(obj, dict):
                 return {key: convert_numpy_types(value) for key, value in obj.items()}
@@ -1092,6 +1118,6 @@ class TextEncoderEvaluator:
         with open(results_file, 'w', encoding='utf-8') as f:
             json.dump(results_serializable, f, indent=2, ensure_ascii=False)
         
-        print(f"✅ 평가 결과 저장: {results_file}")
+        print(f"✓ Evaluation results saved: {results_file}")
         
         return results

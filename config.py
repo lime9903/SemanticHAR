@@ -20,22 +20,20 @@ class SemanticHARConfig:
 
     # Model
     text_encoder_model: str = "bert-base-uncased"
-    sensor_encoder_hidden_dim: int = 768
-    sensor_encoder_layers: int = 6
-    sensor_encoder_heads: int = 8
-    max_sequence_length: int = 512
+    sensor_encoder_hidden_dim: int = 512  # Reduced from 768
+    sensor_encoder_layers: int = 3        # Reduced from 6
+    sensor_encoder_heads: int = 4         # Reduced from 8
+    max_sequence_length: int = 256        # Reduced from 512
     
     # Training
-    batch_size: int = 32
-    learning_rate: float = 1e-5  # Reduced from 2e-5 for more stable training
+    batch_size: int = 16
+    learning_rate: float = 1e-5
     num_epochs: int = 100
     temperature: float = 0.07
     early_stopping: bool = True
-    patience: int = 10  # Increased patience for more stable early stopping
-    
-    # Contrastive Learning
-    alpha: float = 0.5  # Reduced contrastive learning weight
-    beta: float = 0.3   # Reduced reconstruction weight
+    patience: int = 10
+    weight_decay: float = 0.05  # Increased weight decay for better regularization
+    gradient_clip_norm: float = 0.5  # Gradient clipping for stability
     
     # LLM
     llm_model: str = "gpt-3.5-turbo"
@@ -48,6 +46,8 @@ class SemanticHARConfig:
     outlier_ratio: float = 0.2
 
     # Text Encoder
+    alpha: float = 0.5  # contrastive learning weight
+    beta: float = 0.3   # reconstruction weight
     text_encoder_model: str = "bert-base-uncased"
     text_encoder_hidden_dim: int = 768
     text_encoder_layers: int = 6
