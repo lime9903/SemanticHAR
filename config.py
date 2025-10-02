@@ -20,7 +20,7 @@ class SemanticHARConfig:
 
     # Model
     text_encoder_model: str = "bert-base-uncased"
-    sensor_encoder_hidden_dim: int = 512  # Reduced from 768
+    sensor_encoder_hidden_dim: int = 768  # Match BERT output dimension
     sensor_encoder_layers: int = 3        # Reduced from 6
     sensor_encoder_heads: int = 4         # Reduced from 8
     max_sequence_length: int = 256        # Reduced from 512
@@ -46,8 +46,8 @@ class SemanticHARConfig:
     outlier_ratio: float = 0.2
 
     # Text Encoder
-    alpha: float = 0.5  # contrastive learning weight
-    beta: float = 0.3   # reconstruction weight
+    alpha: float = 0.3  # contrastive learning weight (reduced)
+    beta: float = 0.7   # reconstruction weight (increased)
     text_encoder_model: str = "bert-base-uncased"
     text_encoder_hidden_dim: int = 768
     text_encoder_layers: int = 6

@@ -34,11 +34,17 @@ class TextEncoder(nn.Module):
         self.bert = BertModel.from_pretrained(config.text_encoder_model)
         self.tokenizer = BertTokenizer.from_pretrained(config.text_encoder_model)
         
-        self.hidden_dim = self.bert.config.hidden_size
-        self.output_dim = config.sensor_encoder_hidden_dim
+        self.hidden_dim = self.bert.config.hidden_size  # 768
+        self.output_dim = config.sensor_encoder_hidden_dim  # 768 (now matches)
         
-        self.projection = nn.Linear(self.hidden_dim, self.output_dim)
-        self.dropout = nn.Dropout(0.2)  # Increased dropout for better regularization
+        # Improved projection layer for better reconstruction
+        self.projection = nn.Sequential(
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(self.hidden_dim, self.output_dim)
+        )
+        self.dropout = nn.Dropout(0.1)
         self.layer_norm = nn.LayerNorm(self.output_dim)
         
     def forward(self, texts: List[str]) -> torch.Tensor:
@@ -79,33 +85,55 @@ class TextDecoder(nn.Module):
         self.config = config
         self.vocab_size = vocab_size
         
+        # Improved decoder with better architecture
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=config.sensor_encoder_hidden_dim,
             nhead=config.sensor_encoder_heads,
-            dim_feedforward=config.sensor_encoder_hidden_dim * 2,  # Reduced from *4
-            dropout=0.2,  # Increased dropout
-            batch_first=True
+            dim_feedforward=config.sensor_encoder_hidden_dim * 4,  # Increased capacity
+            dropout=0.1,  # Reduced dropout for better learning
+            batch_first=True,
+            norm_first=True  # Pre-norm for better training stability
         )
         
-        # Simplified decoder with fewer layers
+        # More layers for better reconstruction capability
         self.transformer_decoder = nn.TransformerDecoder(
             decoder_layer, 
-            num_layers=config.sensor_encoder_layers
+            num_layers=4  # Increased from config layers
         )
         
-        # Additional regularization layers
-        self.dropout = nn.Dropout(0.3)
+        # Better regularization
+        self.dropout = nn.Dropout(0.1)
         self.layer_norm = nn.LayerNorm(config.sensor_encoder_hidden_dim)
         
-        self.output_projection = nn.Linear(
-            config.sensor_encoder_hidden_dim, 
-            vocab_size
+        # Improved output projection
+        self.output_projection = nn.Sequential(
+            nn.Linear(config.sensor_encoder_hidden_dim, config.sensor_encoder_hidden_dim * 2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(config.sensor_encoder_hidden_dim * 2, vocab_size)
         )
         
+        # Better embedding initialization
         self.embedding = nn.Embedding(vocab_size, config.sensor_encoder_hidden_dim)
         self.positional_encoding = nn.Parameter(
-            torch.randn(1000, config.sensor_encoder_hidden_dim)
+            torch.randn(1000, config.sensor_encoder_hidden_dim) * 0.1  # Smaller initialization
         )
+        
+        # Initialize weights properly
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize weights properly"""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+            elif isinstance(module, nn.Embedding):
+                nn.init.normal_(module.weight, mean=0, std=0.1)
+            elif isinstance(module, nn.LayerNorm):
+                nn.init.constant_(module.bias, 0)
+                nn.init.constant_(module.weight, 1.0)
         
     def forward(self, memory: torch.Tensor, target_ids: torch.Tensor) -> torch.Tensor:
         """Text reconstruction"""
@@ -404,11 +432,12 @@ class TextEncoderTrainer:
             decoder_output_flat = decoder_output.reshape(-1, vocab_size)
             target_flat = target_sequences.reshape(-1)
             
-            # Compute cross-entropy loss
+            # Compute cross-entropy loss with label smoothing
             reconstruction_loss = F.cross_entropy(
                 decoder_output_flat, 
                 target_flat, 
-                ignore_index=self.text_encoder.tokenizer.pad_token_id
+                ignore_index=self.text_encoder.tokenizer.pad_token_id,
+                label_smoothing=0.1  # Label smoothing for better generalization
             )
             
             return reconstruction_loss
@@ -674,7 +703,7 @@ class InterpretationDataset(Dataset):
 # Global cache for loaded data
 _loaded_data_cache = {}
 
-def load_interpretations_from_json(json_file: str) -> Tuple[List[Dict], List[str]]:
+def load_interpretations_from_json(json_file: str) -> Tuple[List[Dict], Dict[str, str]]:
     """Load interpretations from JSON file - returns all data with split info (cached)"""
     
     # Check cache first
@@ -687,7 +716,7 @@ def load_interpretations_from_json(json_file: str) -> Tuple[List[Dict], List[str
         data = json.load(f)
     
     all_sensor_data = []
-    activity_interpretations = []
+    activity_interpretations = {}
     
     # Load all sensor data with split information
     for home_id in data['sensor_interpretations']:
@@ -702,10 +731,10 @@ def load_interpretations_from_json(json_file: str) -> Tuple[List[Dict], List[str
                         'window_id': window_id
                     })
     
-    # Activity interpretations load
+    # Activity interpretations load as dictionary
     for activity, activity_data in data['activity_interpretations'].items():
         if 'interpretation' in activity_data and 'error' not in activity_data:
-            activity_interpretations.append(activity_data['interpretation'])
+            activity_interpretations[activity] = activity_data['interpretation']
     
     print(f"Loaded {len(all_sensor_data)} total sensor interpretations")
     print(f"Loaded {len(activity_interpretations)} activity interpretations")
@@ -748,52 +777,22 @@ def prepare_training_data(interpretations_file: str, splits: List[str] = ['train
     activity_to_interpretation = {}
     for i, activity in enumerate(activities):
         if activity not in activity_to_interpretation:
-            # Find the interpretation for the corresponding activity
-            for act_interpretation in activity_interpretations:
-                if act_interpretation and (activity in act_interpretation or activity.lower() in act_interpretation.lower()):
-                    activity_to_interpretation[activity] = act_interpretation
-                    break
+            if activity in activity_interpretations:
+                activity_to_interpretation[activity] = activity_interpretations[activity]
     
     # Matched activity interpretations
     matched_activity_interpretations = []
     for activity in activities:
         if activity in activity_to_interpretation:
             matched_activity_interpretations.append(activity_to_interpretation[activity])
-        else:
-            # Fallback: Use the first activity interpretation
-            if activity_interpretations and activity_interpretations[0]:
-                matched_activity_interpretations.append(activity_interpretations[0])
-            else:
-                # Final fallback: Use a default interpretation
-                matched_activity_interpretations.append(f"Activity: {activity}")
     
     print(f"Prepared {len(sensor_interpretations)} sensor-activity interpretation pairs")
-    
+
     return InterpretationDataset(
         sensor_interpretations=sensor_interpretations,
         activity_interpretations=matched_activity_interpretations,
         activities=activities
     )
-
-
-def test_text_encoder(text_encoder: TextEncoder, test_interpretations: List[str]):
-    """Text encoder test"""
-    print("\nTesting Text Encoder...")
-    print("=" * 30)
-    
-    text_encoder.eval()
-    
-    with torch.no_grad():
-        for i, interpretation in enumerate(test_interpretations[:3]):  # First 3 only
-            try:
-                embedding = text_encoder.encode_single(interpretation)
-                print(f"Interpretation {i+1}:")
-                print(f"  Text: {interpretation[:100]}...")
-                print(f"  Embedding shape: {embedding.shape}")
-                print(f"  Embedding norm: {torch.norm(embedding).item():.4f}")
-                print()
-            except Exception as e:
-                print(f"⨺ Error encoding interpretation {i+1}: {e}")
 
 
 class TextEncoderEvaluator:
@@ -881,16 +880,18 @@ class TextEncoderEvaluator:
         }
     
     def evaluate_reconstruction_quality(self, texts: List[str]) -> Dict[str, float]:
-        """Reconstruction quality evaluation"""
+        """Reconstruction quality evaluation with realistic autoregressive generation"""
         print("⨠ Reconstruction quality evaluation...")
         
         # Embedding generation
         embeddings = self.text_encoder(texts)
         
         reconstruction_losses = []
-        reconstruction_accuracies = []
+        reconstruction_accuracies_teacher_forcing = []
+        reconstruction_accuracies_autoregressive = []
+        bleu_scores = []
         
-        for i, text in enumerate(texts):
+        for i, text in enumerate(texts[:5]):  # Limit to 5 texts for detailed evaluation
             try:
                 # Tokenization
                 tokens = self.text_encoder.tokenizer.encode(
@@ -900,38 +901,112 @@ class TextEncoderEvaluator:
                     truncation=True
                 )
                 
-                # Reconstruction attempt
-                input_tokens = torch.tensor([tokens[:-1]], device=self.device)  # Last token excluded
-                target_tokens = torch.tensor([tokens[1:]], device=self.device)   # First token excluded
+                # 1. Teacher Forcing Evaluation (for loss calculation)
+                input_tokens = torch.tensor([tokens[:-1]], device=self.device)
+                target_tokens = torch.tensor([tokens[1:]], device=self.device)
                 
-                # Reconstruction
                 decoder_output = self.text_decoder(embeddings[i:i+1], input_tokens)
                 
-                # Loss calculation
+                # Loss calculation (teacher forcing)
                 loss = F.cross_entropy(
                     decoder_output.reshape(-1, decoder_output.size(-1)),
                     target_tokens.reshape(-1),
                     ignore_index=self.text_encoder.tokenizer.pad_token_id
                 )
-                
                 reconstruction_losses.append(loss.item())
                 
-                # Accuracy calculation (simple version)
+                # Teacher forcing accuracy
                 predicted_tokens = torch.argmax(decoder_output, dim=-1)
-                accuracy = (predicted_tokens == target_tokens).float().mean().item()
-                reconstruction_accuracies.append(accuracy)
+                tf_accuracy = (predicted_tokens == target_tokens).float().mean().item()
+                reconstruction_accuracies_teacher_forcing.append(tf_accuracy)
+                
+                # 2. Autoregressive Generation (realistic evaluation)
+                generated_tokens = self._generate_autoregressive(embeddings[i:i+1], max_length=len(tokens))
+                
+                # Autoregressive accuracy (token-level)
+                if len(generated_tokens) > 1:
+                    # Compare with target tokens (excluding [CLS])
+                    target_compare = target_tokens[0][:len(generated_tokens)-1]
+                    gen_compare = torch.tensor(generated_tokens[1:], device=self.device)
+                    
+                    min_len = min(len(target_compare), len(gen_compare))
+                    if min_len > 0:
+                        ar_accuracy = (target_compare[:min_len] == gen_compare[:min_len]).float().mean().item()
+                        reconstruction_accuracies_autoregressive.append(ar_accuracy)
+                    else:
+                        reconstruction_accuracies_autoregressive.append(0.0)
+                else:
+                    reconstruction_accuracies_autoregressive.append(0.0)
+                
+                # 3. BLEU Score (semantic similarity)
+                try:
+                    generated_text = self.text_encoder.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                    original_text = self.text_encoder.tokenizer.decode(tokens, skip_special_tokens=True)
+                    
+                    # Simple word overlap as BLEU proxy
+                    gen_words = set(generated_text.lower().split())
+                    orig_words = set(original_text.lower().split())
+                    if len(orig_words) > 0:
+                        word_overlap = len(gen_words & orig_words) / len(orig_words)
+                        bleu_scores.append(word_overlap)
+                    else:
+                        bleu_scores.append(0.0)
+                except:
+                    bleu_scores.append(0.0)
                 
             except Exception as e:
                 print(f"Reconstruction error (text {i}): {e}")
                 reconstruction_losses.append(float('inf'))
-                reconstruction_accuracies.append(0.0)
+                reconstruction_accuracies_teacher_forcing.append(0.0)
+                reconstruction_accuracies_autoregressive.append(0.0)
+                bleu_scores.append(0.0)
         
         return {
             'avg_reconstruction_loss': np.mean(reconstruction_losses),
-            'avg_reconstruction_accuracy': np.mean(reconstruction_accuracies),
+            'avg_reconstruction_accuracy_teacher_forcing': np.mean(reconstruction_accuracies_teacher_forcing),
+            'avg_reconstruction_accuracy_autoregressive': np.mean(reconstruction_accuracies_autoregressive),
+            'avg_bleu_score': np.mean(bleu_scores),
             'reconstruction_losses': reconstruction_losses,
-            'reconstruction_accuracies': reconstruction_accuracies
+            'teacher_forcing_accuracies': reconstruction_accuracies_teacher_forcing,
+            'autoregressive_accuracies': reconstruction_accuracies_autoregressive,
+            'bleu_scores': bleu_scores
         }
+    
+    def _generate_autoregressive(self, embedding: torch.Tensor, max_length: int = 50) -> List[int]:
+        """Generate text autoregressively from embedding"""
+        self.text_decoder.eval()
+        
+        with torch.no_grad():
+            # Start with [CLS] token
+            generated_tokens = [self.text_encoder.tokenizer.cls_token_id]
+            
+            for _ in range(max_length - 1):
+                # Current input sequence
+                input_tokens = torch.tensor([generated_tokens], device=self.device)
+                
+                # Get decoder output
+                decoder_output = self.text_decoder(embedding, input_tokens)
+                
+                # Get next token prediction (last position)
+                next_token_logits = decoder_output[0, -1, :]
+                
+                # Sample next token with temperature (better than greedy)
+                temperature = 0.8  # Slightly random for diversity
+                next_token_probs = F.softmax(next_token_logits / temperature, dim=-1)
+                next_token = torch.multinomial(next_token_probs, 1).item()
+                
+                # Stop if [SEP] token is generated
+                if next_token == self.text_encoder.tokenizer.sep_token_id:
+                    break
+                    
+                generated_tokens.append(next_token)
+            
+            # Ensure [SEP] token at the end
+            if generated_tokens[-1] != self.text_encoder.tokenizer.sep_token_id:
+                generated_tokens.append(self.text_encoder.tokenizer.sep_token_id)
+        
+        self.text_decoder.train()
+        return generated_tokens
     
     def visualize_embeddings(self, sensor_interpretations: List[str], 
                            activity_interpretations: List[str],
@@ -1033,6 +1108,263 @@ class TextEncoderEvaluator:
         
         print(f"✓ Similarity matrix saved: {save_path}")
     
+    def analyze_pairwise_similarities(self, sensor_interpretations: List[str], 
+                                    activity_interpretations: List[str],
+                                    activities: List[str]) -> Dict:
+        """Analyze pair-wise similarities between matched sensor-activity pairs"""
+        print("⨠ Analyzing pair-wise similarities...")
+        
+        # Data length matching
+        min_length = min(len(sensor_interpretations), len(activity_interpretations))
+        sensor_interpretations = sensor_interpretations[:min_length]
+        activity_interpretations = activity_interpretations[:min_length]
+        activities = activities[:min_length]
+        
+        with torch.no_grad():
+            # Embedding generation
+            sensor_embeddings = self.text_encoder(sensor_interpretations)
+            activity_embeddings = self.text_encoder(activity_interpretations)
+            
+            # Normalization
+            sensor_embeddings = F.normalize(sensor_embeddings, p=2, dim=1)
+            activity_embeddings = F.normalize(activity_embeddings, p=2, dim=1)
+            
+            # Calculate similarities for correct pairs (diagonal)
+            correct_pair_similarities = torch.sum(sensor_embeddings * activity_embeddings, dim=1)
+            
+            # Calculate similarities for incorrect pairs (off-diagonal)
+            similarity_matrix = torch.matmul(sensor_embeddings, activity_embeddings.T)
+            
+            # Get off-diagonal similarities
+            mask = torch.eye(len(sensor_embeddings), device=self.device).bool()
+            off_diagonal_similarities = similarity_matrix[~mask].view(len(sensor_embeddings), -1)
+            
+            # Statistics
+            avg_correct_similarity = correct_pair_similarities.mean().item()
+            std_correct_similarity = correct_pair_similarities.std().item()
+            avg_incorrect_similarity = off_diagonal_similarities.mean().item()
+            std_incorrect_similarity = off_diagonal_similarities.std().item()
+            
+            # Per-activity analysis
+            activity_stats = {}
+            unique_activities = list(set(activities))
+            for activity in unique_activities:
+                activity_indices = [i for i, a in enumerate(activities) if a == activity]
+                if len(activity_indices) > 1:
+                    activity_similarities = correct_pair_similarities[activity_indices]
+                    activity_stats[activity] = {
+                        'count': len(activity_indices),
+                        'avg_similarity': activity_similarities.mean().item(),
+                        'std_similarity': activity_similarities.std().item()
+                    }
+        
+        return {
+            'avg_correct_pair_similarity': avg_correct_similarity,
+            'std_correct_pair_similarity': std_correct_similarity,
+            'avg_incorrect_pair_similarity': avg_incorrect_similarity,
+            'std_incorrect_pair_similarity': std_incorrect_similarity,
+            'similarity_margin': avg_correct_similarity - avg_incorrect_similarity,
+            'activity_stats': activity_stats,
+            'correct_pair_similarities': correct_pair_similarities.detach().cpu().numpy().tolist()
+        }
+    
+    def analyze_category_similarities(self, sensor_interpretations: List[str], 
+                                    activity_interpretations: List[str],
+                                    activities: List[str]) -> Dict:
+        """Analyze similarities within and across activity categories"""
+        print("⨠ Analyzing category similarities...")
+        
+        # Activity to category mapping (same as in dataset)
+        activity_categories = {
+            'Sleeping': 0,
+            'Toileting': 1, 
+            'Showering': 1,
+            'Breakfast': 2,
+            'Lunch': 2,
+            'Dinner': 2,
+            'Grooming': 1,
+            'Spare_Time/TV': 3,
+            'Leaving': 4,
+            'Snack': 2
+        }
+        
+        # Data length matching
+        min_length = min(len(sensor_interpretations), len(activity_interpretations))
+        sensor_interpretations = sensor_interpretations[:min_length]
+        activity_interpretations = activity_interpretations[:min_length]
+        activities = activities[:min_length]
+        
+        with torch.no_grad():
+            # Embedding generation
+            sensor_embeddings = self.text_encoder(sensor_interpretations)
+            activity_embeddings = self.text_encoder(activity_interpretations)
+            
+            # Normalization
+            sensor_embeddings = F.normalize(sensor_embeddings, p=2, dim=1)
+            activity_embeddings = F.normalize(activity_embeddings, p=2, dim=1)
+            
+            # Get categories for each sample
+            categories = torch.tensor([activity_categories.get(activity, 0) for activity in activities], device=self.device)
+            
+            # Calculate similarities within same categories
+            same_category_similarities = []
+            different_category_similarities = []
+            
+            for i in range(len(sensor_embeddings)):
+                for j in range(i + 1, len(sensor_embeddings)):
+                    sim = torch.sum(sensor_embeddings[i] * activity_embeddings[j])
+                    if categories[i] == categories[j]:
+                        same_category_similarities.append(sim.item())
+                    else:
+                        different_category_similarities.append(sim.item())
+            
+            # Statistics
+            avg_same_category = np.mean(same_category_similarities) if same_category_similarities else 0
+            std_same_category = np.std(same_category_similarities) if same_category_similarities else 0
+            avg_different_category = np.mean(different_category_similarities) if different_category_similarities else 0
+            std_different_category = np.std(different_category_similarities) if different_category_similarities else 0
+            
+            # Per-category analysis
+            category_stats = {}
+            for category_id in range(5):  # 0-4 categories
+                category_indices = [i for i, cat in enumerate(categories) if cat == category_id]
+                if len(category_indices) > 1:
+                    category_activities = [activities[i] for i in category_indices]
+                    category_similarities = []
+                    for i in category_indices:
+                        for j in category_indices:
+                            if i != j:
+                                sim = torch.sum(sensor_embeddings[i] * activity_embeddings[j])
+                                category_similarities.append(sim.item())
+                    
+                    category_stats[f'category_{category_id}'] = {
+                        'activities': category_activities,
+                        'count': len(category_indices),
+                        'avg_similarity': np.mean(category_similarities) if category_similarities else 0,
+                        'std_similarity': np.std(category_similarities) if category_similarities else 0
+                    }
+        
+        return {
+            'avg_same_category_similarity': avg_same_category,
+            'std_same_category_similarity': std_same_category,
+            'avg_different_category_similarity': avg_different_category,
+            'std_different_category_similarity': std_different_category,
+            'category_margin': avg_same_category - avg_different_category,
+            'category_stats': category_stats,
+            'same_category_count': len(same_category_similarities),
+            'different_category_count': len(different_category_similarities)
+        }
+    
+    def create_detailed_visualizations(self, sensor_interpretations: List[str], 
+                                     activity_interpretations: List[str],
+                                     activities: List[str], output_dir: str):
+        """Create detailed visualizations for analysis"""
+        print("⨠ Creating detailed visualizations...")
+        
+        # Data length matching
+        min_length = min(len(sensor_interpretations), len(activity_interpretations))
+        sensor_interpretations = sensor_interpretations[:min_length]
+        activity_interpretations = activity_interpretations[:min_length]
+        activities = activities[:min_length]
+        
+        # Activity to category mapping
+        activity_categories = {
+            'Sleeping': 0, 'Toileting': 1, 'Showering': 1, 'Breakfast': 2, 'Lunch': 2,
+            'Dinner': 2, 'Grooming': 1, 'Spare_Time/TV': 3, 'Leaving': 4, 'Snack': 2
+        }
+        
+        with torch.no_grad():
+            # Generate embeddings
+            sensor_embeddings = self.text_encoder(sensor_interpretations)
+            activity_embeddings = self.text_encoder(activity_interpretations)
+            
+            # Normalize embeddings
+            sensor_embeddings = F.normalize(sensor_embeddings, p=2, dim=1)
+            activity_embeddings = F.normalize(activity_embeddings, p=2, dim=1)
+            
+            # Calculate similarities
+            similarity_matrix = torch.matmul(sensor_embeddings, activity_embeddings.T)
+            
+            # 1. Pair-wise similarity distribution
+            correct_similarities = torch.diag(similarity_matrix)
+            off_diagonal_mask = ~torch.eye(len(similarity_matrix), device=self.device).bool()
+            incorrect_similarities = similarity_matrix[off_diagonal_mask]
+            
+            plt.figure(figsize=(12, 8))
+            plt.hist(correct_similarities.detach().cpu().numpy(), bins=20, alpha=0.7, 
+                    label='Correct Pairs', color='green', density=True)
+            plt.hist(incorrect_similarities.detach().cpu().numpy(), bins=20, alpha=0.7, 
+                    label='Incorrect Pairs', color='red', density=True)
+            plt.xlabel('Cosine Similarity')
+            plt.ylabel('Density')
+            plt.title('Distribution of Pair-wise Similarities')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.savefig(os.path.join(output_dir, "pair_similarity_distribution.png"), dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # 2. Category-based similarity analysis
+            categories = [activity_categories.get(activity, 0) for activity in activities]
+            category_colors = ['blue', 'green', 'red', 'orange', 'purple']
+            
+            plt.figure(figsize=(15, 10))
+            
+            # Create subplots for each category
+            for category_id in range(5):
+                plt.subplot(2, 3, category_id + 1)
+                category_indices = [i for i, cat in enumerate(categories) if cat == category_id]
+                
+                if len(category_indices) > 1:
+                    category_similarities = []
+                    for i in category_indices:
+                        for j in category_indices:
+                            if i != j:
+                                category_similarities.append(similarity_matrix[i, j].item())
+                    
+                    if category_similarities:
+                        plt.hist(category_similarities, bins=10, alpha=0.7, 
+                                color=category_colors[category_id], density=True)
+                        plt.title(f'Category {category_id} Similarities')
+                        plt.xlabel('Similarity')
+                        plt.ylabel('Density')
+                        plt.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(output_dir, "category_similarity_analysis.png"), dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # 3. Activity-specific similarity heatmap
+            unique_activities = list(set(activities))
+            activity_matrix = np.zeros((len(unique_activities), len(unique_activities)))
+            
+            for i, act1 in enumerate(unique_activities):
+                for j, act2 in enumerate(unique_activities):
+                    indices1 = [k for k, a in enumerate(activities) if a == act1]
+                    indices2 = [k for k, a in enumerate(activities) if a == act2]
+                    
+                    if indices1 and indices2:
+                        similarities = []
+                        for idx1 in indices1:
+                            for idx2 in indices2:
+                                similarities.append(similarity_matrix[idx1, idx2].item())
+                        activity_matrix[i, j] = np.mean(similarities)
+            
+            plt.figure(figsize=(12, 10))
+            sns.heatmap(activity_matrix, 
+                       xticklabels=unique_activities, 
+                       yticklabels=unique_activities,
+                       annot=True, fmt='.3f', cmap='RdYlBu_r', center=0)
+            plt.title('Activity-to-Activity Similarity Matrix')
+            plt.xlabel('Activity Interpretations')
+            plt.ylabel('Sensor Interpretations')
+            plt.xticks(rotation=45)
+            plt.yticks(rotation=0)
+            plt.tight_layout()
+            plt.savefig(os.path.join(output_dir, "activity_similarity_heatmap.png"), dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            print(f"✓ Detailed visualizations saved to {output_dir}")
+    
     def comprehensive_evaluation(self, interpretations_file: str, 
                               output_dir: str = "outputs") -> Dict:
         """Comprehensive evaluation"""
@@ -1055,22 +1387,32 @@ class TextEncoderEvaluator:
                             sensor_interpretations.append(window_data['interpretation'])
                             activities.append(window_data['activity'])
         
-        # Activity interpretations extraction
+        # Activity interpretations extraction and proper matching
+        activity_interpretation_dict = {}
         for activity, interpretation_data in data.get('activity_interpretations', {}).items():
             if 'interpretation' in interpretation_data:
-                activity_interpretations.append(interpretation_data['interpretation'])
+                activity_interpretation_dict[activity] = interpretation_data['interpretation']
+        
+        # Match sensor interpretations with their corresponding activity interpretations
+        matched_activity_interpretations = []
+        for activity in activities:
+            if activity in activity_interpretation_dict:
+                matched_activity_interpretations.append(activity_interpretation_dict[activity])
+            else:
+                # Fallback for unmatched activities
+                matched_activity_interpretations.append(f"Activity: {activity}")
         
         # Data limit (for evaluation)
-        max_samples = min(50, len(sensor_interpretations), len(activity_interpretations))
+        max_samples = min(50, len(sensor_interpretations))
         sensor_interpretations = sensor_interpretations[:max_samples]
         activities = activities[:max_samples]
-        activity_interpretations = activity_interpretations[:max_samples]
+        matched_activity_interpretations = matched_activity_interpretations[:max_samples]
         
-        print(f" Evaluation data: {len(sensor_interpretations)} sensors, {len(activity_interpretations)} activities")
+        print(f" Evaluation data: {len(sensor_interpretations)} sensors, {len(matched_activity_interpretations)} activities")
         
         # 1. Alignment quality evaluation
         alignment_results = self.evaluate_alignment_quality(
-            sensor_interpretations, activity_interpretations
+            sensor_interpretations, matched_activity_interpretations
         )
         
         # 2. Reconstruction quality evaluation
@@ -1080,24 +1422,45 @@ class TextEncoderEvaluator:
         
         # 3. Visualization
         self.visualize_embeddings(
-            sensor_interpretations, activity_interpretations, activities,
+            sensor_interpretations, matched_activity_interpretations, activities,
             os.path.join(output_dir, "embedding_visualization.png")
         )
         
         self.evaluate_similarity_matrix(
-            sensor_interpretations, activity_interpretations,
+            sensor_interpretations, matched_activity_interpretations,
             os.path.join(output_dir, "similarity_matrix.png")
+        )
+        
+        # 4. Detailed pair-wise and category analysis
+        pair_analysis = self.analyze_pairwise_similarities(
+            sensor_interpretations, matched_activity_interpretations, activities
+        )
+        
+        category_analysis = self.analyze_category_similarities(
+            sensor_interpretations, matched_activity_interpretations, activities
+        )
+        
+        # 5. Enhanced visualizations
+        self.create_detailed_visualizations(
+            sensor_interpretations, matched_activity_interpretations, activities,
+            output_dir
         )
         
         # Comprehensive results
         results = {
             'alignment_quality': alignment_results,
             'reconstruction_quality': reconstruction_results,
+            'pair_analysis': pair_analysis,
+            'category_analysis': category_analysis,
             'evaluation_summary': {
                 'accuracy': alignment_results['accuracy'],
                 'margin': alignment_results['margin'],
                 'reconstruction_loss': reconstruction_results['avg_reconstruction_loss'],
-                'reconstruction_accuracy': reconstruction_results['avg_reconstruction_accuracy']
+                'reconstruction_accuracy': reconstruction_results['avg_reconstruction_accuracy_teacher_forcing'],
+                'reconstruction_accuracy_ar': reconstruction_results['avg_reconstruction_accuracy_autoregressive'],
+                'bleu_score': reconstruction_results['avg_bleu_score'],
+                'avg_pair_similarity': pair_analysis['avg_correct_pair_similarity'],
+                'avg_category_similarity': category_analysis['avg_same_category_similarity']
             }
         }
         
@@ -1120,4 +1483,100 @@ class TextEncoderEvaluator:
         
         print(f"✓ Evaluation results saved: {results_file}")
         
+        # Print detailed results table
+        self.print_evaluation_results(results)
+        
         return results
+    
+    def print_evaluation_results(self, results: Dict):
+        """Print evaluation results in a formatted table"""
+        print("\n" + "="*80)
+        print("TEXT ENCODER EVALUATION RESULTS")
+        print("="*80)
+        
+        # Main metrics
+        summary = results['evaluation_summary']
+        print(f"\nMAIN METRICS:")
+        print(f"   Accuracy:                    {summary['accuracy']:.3f}")
+        print(f"   Similarity Margin:          {summary['margin']:.3f}")
+        print(f"   Reconstruction Loss:        {summary['reconstruction_loss']:.3f}")
+        print(f"   Reconstruction Accuracy (TF): {summary['reconstruction_accuracy']:.3f}")
+        print(f"   Reconstruction Accuracy (AR): {summary.get('reconstruction_accuracy_ar', 0.0):.3f}")
+        print(f"   BLEU Score:                 {summary.get('bleu_score', 0.0):.3f}")
+        print(f"   Avg Pair Similarity:        {summary['avg_pair_similarity']:.3f}")
+        print(f"   Avg Category Similarity:    {summary['avg_category_similarity']:.3f}")
+        
+        # Pair-wise analysis
+        pair_analysis = results['pair_analysis']
+        print(f"\nPAIR-WISE ANALYSIS:")
+        print(f"   Correct Pairs Similarity:   {pair_analysis['avg_correct_pair_similarity']:.3f} ± {pair_analysis['std_correct_pair_similarity']:.3f}")
+        print(f"   Incorrect Pairs Similarity: {pair_analysis['avg_incorrect_pair_similarity']:.3f} ± {pair_analysis['std_incorrect_pair_similarity']:.3f}")
+        print(f"   Similarity Margin:          {pair_analysis['similarity_margin']:.3f}")
+        
+        # Activity-specific results
+        print(f"\nACTIVITY-SPECIFIC RESULTS:")
+        activity_stats = pair_analysis['activity_stats']
+        for activity, stats in activity_stats.items():
+            print(f"   {activity:15}: {stats['avg_similarity']:.3f} ± {stats['std_similarity']:.3f} (n={stats['count']})")
+        
+        # Category analysis
+        category_analysis = results['category_analysis']
+        print(f"\nCATEGORY ANALYSIS:")
+        print(f"   Same Category Similarity:   {category_analysis['avg_same_category_similarity']:.3f} ± {category_analysis['std_same_category_similarity']:.3f}")
+        print(f"   Different Category Similarity: {category_analysis['avg_different_category_similarity']:.3f} ± {category_analysis['std_different_category_similarity']:.3f}")
+        print(f"   Category Margin:            {category_analysis['category_margin']:.3f}")
+        
+        # Category-specific results
+        print(f"\nCATEGORY-SPECIFIC RESULTS:")
+        category_stats = category_analysis['category_stats']
+        category_names = {
+            'category_0': 'Sleeping',
+            'category_1': 'Bathroom (Toileting, Showering, Grooming)', 
+            'category_2': 'Meals (Breakfast, Lunch, Dinner, Snack)',
+            'category_3': 'Entertainment (TV)',
+            'category_4': 'Leaving'
+        }
+        
+        for category_key, stats in category_stats.items():
+            category_name = category_names.get(category_key, category_key)
+            activities_str = ', '.join(stats['activities'][:3])  # Show first 3 activities
+            if len(stats['activities']) > 3:
+                activities_str += f" (+{len(stats['activities'])-3} more)"
+            print(f"   {category_name:25}: {stats['avg_similarity']:.3f} ± {stats['std_similarity']:.3f} ({activities_str})")
+        
+        # Reconstruction analysis
+        print(f"\nRECONSTRUCTION ANALYSIS:")
+        print(f"   Teacher Forcing Accuracy:   {summary['reconstruction_accuracy']:.3f} (training-like, optimistic)")
+        print(f"   Autoregressive Accuracy:    {summary['reconstruction_accuracy_ar']:.3f} (realistic, pessimistic)")
+        print(f"   BLEU Score (semantic):      {summary['bleu_score']:.3f} (word overlap)")
+        
+        if summary['reconstruction_accuracy'] > 0.8:
+            print("   Note: High TF accuracy is expected (teacher forcing)")
+        if summary['reconstruction_accuracy_ar'] > 0.5:
+            print("   Note: Good AR accuracy indicates strong reconstruction capability")
+        elif summary['reconstruction_accuracy_ar'] < 0.2:
+            print("   Warning: Low AR accuracy - reconstruction may be challenging")
+        
+        # Quality assessment
+        print(f"\nQUALITY ASSESSMENT:")
+        accuracy = summary['accuracy']
+        margin = summary['margin']
+        pair_margin = pair_analysis['similarity_margin']
+        category_margin = category_analysis['category_margin']
+        ar_accuracy = summary['reconstruction_accuracy_ar']
+        
+        if accuracy > 0.8 and margin > 0.5 and pair_margin > 0.3 and category_margin > 0.2:
+            print("   EXCELLENT: Text encoder training is very successful!")
+        elif accuracy > 0.6 and margin > 0.3 and pair_margin > 0.2 and category_margin > 0.1:
+            print("   GOOD: Text encoder training is successful.")
+        elif accuracy > 0.4 and margin > 0.2:
+            print("   FAIR: Text encoder training shows some improvement.")
+        else:
+            print("   POOR: Text encoder training needs more work.")
+        
+        print(f"\nRECONSTRUCTION INSIGHT:")
+        print(f"   - Teacher Forcing: Training method (optimistic results)")
+        print(f"   - Autoregressive: Real inference (realistic results)")
+        print(f"   - Reconstruction is mainly for regularization, not exact reproduction")
+        
+        print("="*80)

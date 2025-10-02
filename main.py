@@ -117,19 +117,18 @@ def evaluate_text_encoder(config: SemanticHARConfig, text_encoder: TextEncoder, 
         # Run comprehensive evaluation
         results = evaluator.comprehensive_evaluation(interpretations_file)
         
-        # Print results
-        print("\n" + "="*60)
-        print("Text Encoder Evaluation Results")
-        print("="*60)
-        print(f"- Accuracy: {results['evaluation_summary']['accuracy']:.3f}")
-        print(f"- Margin: {results['evaluation_summary']['margin']:.3f}")
-        print(f"- Reconstruction Loss: {results['evaluation_summary']['reconstruction_loss']:.3f}")
-        print(f"- Reconstruction Accuracy: {results['evaluation_summary']['reconstruction_accuracy']:.3f}")
-        print("="*60)
-        
-        # Quality judgment
+        # Results are already printed in detail by the evaluator
+        # Additional summary for main function
         accuracy = results['evaluation_summary']['accuracy']
         margin = results['evaluation_summary']['margin']
+        pair_margin = results['evaluation_summary']['avg_pair_similarity']
+        category_margin = results['evaluation_summary']['avg_category_similarity']
+        
+        print(f"\nQUICK SUMMARY:")
+        print(f"   Overall Accuracy: {accuracy:.3f}")
+        print(f"   Similarity Margin: {margin:.3f}")
+        print(f"   Pair Similarity: {pair_margin:.3f}")
+        print(f"   Category Similarity: {category_margin:.3f}")
         
         if accuracy > 0.8 and margin > 0.5:
             print("✓ Text Encoder training is very well done!")
