@@ -798,41 +798,21 @@ def prepare_training_data(interpretations_file: str, splits: List[str] = ['train
 class TextEncoderEvaluator:
     """Text Encoder training validation class"""
     
-    def __init__(self, config: SemanticHARConfig, text_encoder: Optional[TextEncoder] = None, model_path: Optional[str] = None):
+    def __init__(self, config: SemanticHARConfig, text_encoder: TextEncoder):
         self.config = config
         self.device = torch.device(config.device)
         
-        # Model loading
-        if text_encoder is not None:
-            self.text_encoder = text_encoder
-            self.text_decoder = TextDecoder(config).to(self.device)
-            print(f"✓ TextEncoder object is used directly.")
-        elif model_path and os.path.exists(model_path):
-            self.text_encoder = TextEncoder(config).to(self.device)
-            self.text_decoder = TextDecoder(config).to(self.device)
-            self.load_model(model_path)
-            print(f"✓ Model loaded: {model_path}")
-        else:
-            self.text_encoder = TextEncoder(config).to(self.device)
-            self.text_decoder = TextDecoder(config).to(self.device)
-            print("⨺ Model file not found. Randomly initialized model is used.")
+        # Use provided text encoder
+        self.text_encoder = text_encoder
+        self.text_decoder = TextDecoder(config).to(self.device)
         
         # Evaluation mode
         self.text_encoder.eval()
         self.text_decoder.eval()
     
-    def load_model(self, model_path: str):
-        """Load trained model"""
-        checkpoint = torch.load(model_path, map_location=self.device)
-        if 'text_encoder' in checkpoint:
-            self.text_encoder.load_state_dict(checkpoint['text_encoder'])
-        else:
-            self.text_encoder.load_state_dict(checkpoint)
-    
     def evaluate_alignment_quality(self, sensor_interpretations: List[str], 
                                  activity_interpretations: List[str]) -> Dict[str, float]:
         """Sensor-Activity alignment quality evaluation"""
-        print("⨠ Sensor-Activity alignment quality evaluation...")
         
         # Data length matching
         min_length = min(len(sensor_interpretations), len(activity_interpretations))
@@ -881,7 +861,6 @@ class TextEncoderEvaluator:
     
     def evaluate_reconstruction_quality(self, texts: List[str]) -> Dict[str, float]:
         """Reconstruction quality evaluation with realistic autoregressive generation"""
-        print("⨠ Reconstruction quality evaluation...")
         
         # Embedding generation
         embeddings = self.text_encoder(texts)
@@ -1013,7 +992,6 @@ class TextEncoderEvaluator:
                            activities: List[str],
                            save_path: str = "outputs/embedding_visualization.png"):
         """Embedding visualization"""
-        print("⨠ Embedding visualization generating...")
         
         # Data length matching
         min_length = min(len(sensor_interpretations), len(activity_interpretations))
@@ -1062,13 +1040,12 @@ class TextEncoderEvaluator:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"✓ Visualization saved: {save_path}")
+        print(f"  ✓ Embedding visualization saved: {save_path}")
     
     def evaluate_similarity_matrix(self, sensor_interpretations: List[str], 
                                  activity_interpretations: List[str],
                                  save_path: str = "outputs/similarity_matrix.png"):
         """Similarity matrix visualization"""
-        print("⨠ Similarity matrix visualization generating...")
         
         # Data length matching
         min_length = min(len(sensor_interpretations), len(activity_interpretations))
@@ -1106,13 +1083,12 @@ class TextEncoderEvaluator:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"✓ Similarity matrix saved: {save_path}")
+        print(f"  ✓ Similarity matrix saved: {save_path}")
     
     def analyze_pairwise_similarities(self, sensor_interpretations: List[str], 
                                     activity_interpretations: List[str],
                                     activities: List[str]) -> Dict:
         """Analyze pair-wise similarities between matched sensor-activity pairs"""
-        print("⨠ Analyzing pair-wise similarities...")
         
         # Data length matching
         min_length = min(len(sensor_interpretations), len(activity_interpretations))
@@ -1172,7 +1148,6 @@ class TextEncoderEvaluator:
                                     activity_interpretations: List[str],
                                     activities: List[str]) -> Dict:
         """Analyze similarities within and across activity categories"""
-        print("⨠ Analyzing category similarities...")
         
         # Activity to category mapping (same as in dataset)
         activity_categories = {
@@ -1259,7 +1234,6 @@ class TextEncoderEvaluator:
                                      activity_interpretations: List[str],
                                      activities: List[str], output_dir: str):
         """Create detailed visualizations for analysis"""
-        print("⨠ Creating detailed visualizations...")
         
         # Data length matching
         min_length = min(len(sensor_interpretations), len(activity_interpretations))
@@ -1330,8 +1304,10 @@ class TextEncoderEvaluator:
                         plt.grid(True, alpha=0.3)
             
             plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, "category_similarity_analysis.png"), dpi=300, bbox_inches='tight')
+            save_path = os.path.join(output_dir, "category_similarity_analysis.png")
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
             plt.close()
+            print(f"  ✓ Category similarity analysis saved: {save_path}")
             
             # 3. Activity-specific similarity heatmap
             unique_activities = list(set(activities))
@@ -1360,16 +1336,16 @@ class TextEncoderEvaluator:
             plt.xticks(rotation=45)
             plt.yticks(rotation=0)
             plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, "activity_similarity_heatmap.png"), dpi=300, bbox_inches='tight')
+            save_path = os.path.join(output_dir, "activity_similarity_heatmap.png")
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
             plt.close()
             
-            print(f"✓ Detailed visualizations saved to {output_dir}")
+            print(f"  ✓ Activity similarity heatmap saved: {save_path}")
     
     def comprehensive_evaluation(self, interpretations_file: str, 
                               output_dir: str = "outputs") -> Dict:
         """Comprehensive evaluation"""
-        print("⨠ Text Encoder comprehensive evaluation starting...")
-        
+
         # Data loading
         with open(interpretations_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -1481,7 +1457,7 @@ class TextEncoderEvaluator:
         with open(results_file, 'w', encoding='utf-8') as f:
             json.dump(results_serializable, f, indent=2, ensure_ascii=False)
         
-        print(f"✓ Evaluation results saved: {results_file}")
+        print(f"  ✓ Evaluation results saved: {results_file}")
         
         # Print detailed results table
         self.print_evaluation_results(results)
@@ -1490,9 +1466,6 @@ class TextEncoderEvaluator:
     
     def print_evaluation_results(self, results: Dict):
         """Print evaluation results in a formatted table"""
-        print("\n" + "="*80)
-        print("TEXT ENCODER EVALUATION RESULTS")
-        print("="*80)
         
         # Main metrics
         summary = results['evaluation_summary']
@@ -1557,26 +1530,7 @@ class TextEncoderEvaluator:
         elif summary['reconstruction_accuracy_ar'] < 0.2:
             print("   Warning: Low AR accuracy - reconstruction may be challenging")
         
-        # Quality assessment
-        print(f"\nQUALITY ASSESSMENT:")
-        accuracy = summary['accuracy']
-        margin = summary['margin']
-        pair_margin = pair_analysis['similarity_margin']
-        category_margin = category_analysis['category_margin']
-        ar_accuracy = summary['reconstruction_accuracy_ar']
-        
-        if accuracy > 0.8 and margin > 0.5 and pair_margin > 0.3 and category_margin > 0.2:
-            print("   EXCELLENT: Text encoder training is very successful!")
-        elif accuracy > 0.6 and margin > 0.3 and pair_margin > 0.2 and category_margin > 0.1:
-            print("   GOOD: Text encoder training is successful.")
-        elif accuracy > 0.4 and margin > 0.2:
-            print("   FAIR: Text encoder training shows some improvement.")
-        else:
-            print("   POOR: Text encoder training needs more work.")
-        
         print(f"\nRECONSTRUCTION INSIGHT:")
         print(f"   - Teacher Forcing: Training method (optimistic results)")
         print(f"   - Autoregressive: Real inference (realistic results)")
         print(f"   - Reconstruction is mainly for regularization, not exact reproduction")
-        
-        print("="*80)

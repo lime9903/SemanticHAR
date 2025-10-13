@@ -46,8 +46,8 @@ class SemanticHARConfig:
     outlier_ratio: float = 0.2
 
     # Text Encoder
-    alpha: float = 0.3  # contrastive learning weight (reduced)
-    beta: float = 0.7   # reconstruction weight (increased)
+    alpha: float = 0.7  # contrastive learning weight
+    beta: float = 0.3   # reconstruction weight
     text_encoder_model: str = "bert-base-uncased"
     text_encoder_hidden_dim: int = 768
     text_encoder_layers: int = 6

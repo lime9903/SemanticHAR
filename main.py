@@ -7,6 +7,7 @@ import sys
 import argparse
 import json
 import torch
+import numpy as np
 from typing import Dict, List
 from datetime import datetime
 
@@ -16,8 +17,8 @@ sys.path.append('/workspace/semantic')
 from config import SemanticHARConfig, OPENAI_API_KEY
 from dataloader.data_loader import load_sensor_data
 from llm.semantic_generator import SemanticGenerator
-from models.text_encoder import TextEncoder
-from models.text_encoder import TextEncoderTrainer
+from models.text_encoder import TextEncoder, TextEncoderTrainer, TextEncoderEvaluator
+from models.sensor_encoder import SensorEncoderPhase2Trainer, SensorEncoderEvaluator
 
 
 def setup_environment():
@@ -102,55 +103,15 @@ def save_time_windows(sensor_data: Dict, config: SemanticHARConfig) -> str:
     return time_windows_file
 
 
-def evaluate_text_encoder(config: SemanticHARConfig, text_encoder: TextEncoder, interpretations_file: str):
-    """Evaluate text encoder performance and create visualizations"""
-    print("=" * 50)
-    print("Step 4: Text Encoder Evaluation")
-    print("=" * 50)
-    
-    try:
-        from models.text_encoder import TextEncoderEvaluator
-        
-        # Create evaluator
-        evaluator = TextEncoderEvaluator(config, text_encoder=text_encoder)
-        
-        # Run comprehensive evaluation
-        results = evaluator.comprehensive_evaluation(interpretations_file)
-        
-        # Results are already printed in detail by the evaluator
-        # Additional summary for main function
-        accuracy = results['evaluation_summary']['accuracy']
-        margin = results['evaluation_summary']['margin']
-        pair_margin = results['evaluation_summary']['avg_pair_similarity']
-        category_margin = results['evaluation_summary']['avg_category_similarity']
-        
-        print(f"\nQUICK SUMMARY:")
-        print(f"   Overall Accuracy: {accuracy:.3f}")
-        print(f"   Similarity Margin: {margin:.3f}")
-        print(f"   Pair Similarity: {pair_margin:.3f}")
-        print(f"   Category Similarity: {category_margin:.3f}")
-        
-        if accuracy > 0.8 and margin > 0.5:
-            print("✓ Text Encoder training is very well done!")
-        elif accuracy > 0.6 and margin > 0.3:
-            print("⨠ Text Encoder training is good.")
-        else:
-            print("⨺ Text Encoder training is insufficient. Please train more epochs.")
-        
-        return results
-        
-    except Exception as e:
-        print(f"⨺ Error during evaluation: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-
 def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, max_activity_interpretations: int = 20):
     """SemanticHAR System Training Pipeline"""
     print('\n' + "=" * 60)
     print("SemanticHAR System Training Pipeline")
     print("=" * 60)
+    
+    # Initialize model instances
+    text_encoder = None
+    sensor_encoder = None
     
     # Step 1: Load sensor data
     print(f"\nLoading {config.dataset_name} sensor data...")
@@ -191,7 +152,7 @@ def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, ma
                 print(f"   - Home B: {len(sensor_data['home_b']['train'])} train, {len(sensor_data['home_b']['val'])} val, {len(sensor_data['home_b']['test'])} test")
             except Exception as e2:
                 print(f"⨺ Failed to load sensor data: {e2}")
-                return None, None, None
+                return None, None
     else:
         try:
             sensor_data = load_sensor_data(
@@ -209,7 +170,7 @@ def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, ma
             
         except Exception as e:
             print(f"⨺ Failed to load sensor data: {e}")
-            return None, None, None
+            return None, None
     
     # Step 2: Generate semantic interpretations
     interpretations_file = "outputs/semantic_interpretations.json"
@@ -249,7 +210,7 @@ def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, ma
             )
             if not interpretations_file:
                 print("⨺ Cannot proceed without semantic interpretations")
-                return None, None, None
+                return None, None
     else:
         # Generate new interpretations using SemanticGenerator
         generator = SemanticGenerator(config)
@@ -263,40 +224,151 @@ def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, ma
         )
         if not interpretations_file:
             print("⨺ Cannot proceed without semantic interpretations")
-            return None, None, None
+            return None, None
     
-    # Step 3: Train text encoder
-    print("\nTraining text encoder...")
+    # Step 3: Train or load text encoder
+    print("\n" + "=" * 60)
+    print("Step 3: Text Encoder Training")
+    print("=" * 60)
+    
     try:
+        # Check if trained text encoder exists
+        text_encoder_checkpoint = "checkpoints/text_encoder_trained.pth"
+        
         # Initialize TextEncoderTrainer
         text_encoder_trainer = TextEncoderTrainer(config)
         
-        # Train text encoder
-        text_encoder = text_encoder_trainer.train_with_interpretations(
-            interpretations_file=interpretations_file,
-            num_epochs=config.num_epochs,
-            batch_size=config.batch_size,
-            early_stopping=config.early_stopping,
-            patience=config.patience
-        )
+        if os.path.exists(text_encoder_checkpoint):
+            print(f"✓ Trained text encoder found: {text_encoder_checkpoint}")
+            print("  Loading existing model weights...")
+            
+            # Load trained model
+            text_encoder_trainer.text_encoder.load_state_dict(
+                torch.load(text_encoder_checkpoint, map_location=config.device)
+            )
+            text_encoder = text_encoder_trainer.text_encoder
+            text_encoder.eval()
+            
+            print("✓ Text encoder weights loaded successfully!")
+            print(f"  Model location: {text_encoder_checkpoint}")
+            
+        else:
+            print("⨺ Trained text encoder not found.")
+            print(f"  Expected location: {text_encoder_checkpoint}")
+            print("  Starting new training...")
+            
+            # Train text encoder
+            text_encoder = text_encoder_trainer.train_with_interpretations(
+                interpretations_file=interpretations_file,
+                num_epochs=config.num_epochs,
+                batch_size=config.batch_size,
+                early_stopping=config.early_stopping,
+                patience=config.patience
+            )
         
         if not text_encoder:
             print("⨺ Cannot proceed without trained text encoder")
-            return None, None, None
+            return None, None
             
     except Exception as e:
-        print(f"⨺ Error during text encoder training: {e}")
+        print(f"⨺ Error during text encoder loading/training: {e}")
         import traceback
         traceback.print_exc()
-        return None, None, None
+        return None, None
     
-    # Step 4: Evaluate text encoder
-    evaluation_results = evaluate_text_encoder(config, text_encoder, interpretations_file)
+    # Evaluate text encoder
+    print("\n" + "=" * 60)
+    print("Text Encoder Evaluation")
+    print("=" * 60)
+    
+    try:
+        evaluator = TextEncoderEvaluator(config, text_encoder=text_encoder)
+        evaluation_results = evaluator.comprehensive_evaluation(interpretations_file)
+
+    except Exception as e:
+        print(f"⨺ Error during text encoder evaluation: {e}")
+        import traceback
+        traceback.print_exc()
+
+    
+    # Step 4: Train sensor encoder
+    print("\n" + "=" * 60)
+    print("Step 4: Sensor Encoder Training")
+    print("=" * 60)
+
+    try:
+        # Check if trained sensor encoder exists
+        sensor_encoder_checkpoint = "checkpoints/sensor_encoder_trained.pth"
+        
+        # Initialize Phase 2 trainer
+        sensor_trainer = SensorEncoderPhase2Trainer(config, text_encoder)
+        
+        if os.path.exists(sensor_encoder_checkpoint):
+            print(f"✓ Trained sensor encoder found: {sensor_encoder_checkpoint}")
+            print("  Loading existing model weights...")
+            
+            # Load trained model
+            sensor_trainer.sensor_encoder.load_state_dict(
+                torch.load(sensor_encoder_checkpoint, map_location=config.device)
+            )
+            sensor_encoder = sensor_trainer.sensor_encoder
+            sensor_encoder.eval()
+            
+            print("✓ Sensor encoder weights loaded successfully!")
+            print(f"  Model location: {sensor_encoder_checkpoint}")
+            
+        else:
+            print("⨺  Trained sensor encoder not found.")
+            print(f"  Expected location: {sensor_encoder_checkpoint}")
+            print("  Starting new training...")
+            
+            # Train sensor encoder
+            sensor_encoder = sensor_trainer.train_with_interpretations(
+                interpretations_file=interpretations_file,
+                num_epochs=config.num_epochs,
+                batch_size=config.batch_size,
+                early_stopping=config.early_stopping,
+                patience=config.patience
+            )
+        
+        if not sensor_encoder:
+            print("⨺ Cannot proceed without trained sensor encoder")
+                    
+    except Exception as e:
+        print(f"⨺ Error during sensor encoder loading/training: {e}")
+        import traceback
+        traceback.print_exc()
+
+    if sensor_encoder:
+        print("✓ Sensor encoder training completed successfully!")
+        
+        # Evaluate sensor encoder
+        print("\n" + "=" * 60)
+        print("Sensor Encoder Evaluation")
+        print("=" * 60)
+        
+        try:
+            sensor_evaluator = SensorEncoderEvaluator(config, sensor_encoder, text_encoder)
+            sensor_evaluation_results = sensor_evaluator.comprehensive_evaluation(interpretations_file)
+            
+            if sensor_evaluation_results:
+                print("✓ Sensor encoder evaluation completed successfully!")
+            else:
+                print("⨺ Sensor encoder evaluation failed!")
+                
+        except Exception as e:
+            print(f"⨺ Error during sensor encoder evaluation: {e}")
+            import traceback
+            traceback.print_exc()
+            sensor_evaluation_results = None
+    else:
+        print("⨺ Training sensor encoder failed!")
+        sensor_evaluation_results = None
     
     print("\nSemanticHAR System Training Pipeline Completed!")
     print("=" * 60)
     
-    return text_encoder, sensor_data, evaluation_results
+    return text_encoder, sensor_encoder
 
 
 def main():
@@ -307,7 +379,7 @@ def main():
     
     parser = argparse.ArgumentParser(description='SemanticHAR System')
     parser.add_argument('--mode', type=str, default='train', 
-                       choices=['train', 'generate', 'evaluate'],
+                       choices=['train', 'train_sensor_encoder', 'evaluate_sensor', 'generate', 'evaluate'],
                        help='Execution mode')
     parser.add_argument('--dataset', type=str, default='UCI_ADL',
                        choices=['UCI_ADL', 'MARBLE'],
@@ -368,14 +440,105 @@ def main():
     print(f"  - Max activity interpretations: {config.max_activity_interpretations}")
     
     if args.mode == 'train':
-        text_encoder, sensor_data, evaluation_results = train_lanhar(config, args.max_windows, args.max_activities)
+        text_encoder, sensor_encoder = train_lanhar(config, args.max_windows, args.max_activities)
         
-        if text_encoder:
-            print("\n✓ Training completed successfully!")
-            if evaluation_results:
-                print("✓ Evaluation completed successfully!")
+        if text_encoder and sensor_encoder:
+            print("\n✓ Both text encoder and sensor encoder training completed successfully!")
+            print("✓ Text encoder and sensor encoder are ready for inference!")
+        elif text_encoder:
+            print("\n✓ Text encoder training completed successfully!")
+            print("⨺ Training sensor encoder failed!")
         else:
             print("\n✗ Training failed!")
+
+    elif args.mode == 'train_sensor_encoder':
+        # Phase 2 only: Train sensor encoder using pre-trained text encoder
+        print("\nStep 4: Training sensor encoder only...")
+        try:
+            # Check if text encoder exists
+            text_encoder_path = "checkpoints/text_encoder_trained.pth"
+            interpretations_file = "outputs/semantic_interpretations.json"
+            
+            if not os.path.exists(text_encoder_path):
+                print("⨺ Pre-trained text encoder not found. Please run 'train' mode first.")
+                return
+            
+            if not os.path.exists(interpretations_file):
+                print("⨺ Semantic interpretations file not found. Please run 'generate' mode first.")
+                return
+            
+            # Load pre-trained text encoder
+            from models.text_encoder import TextEncoder
+            text_encoder = TextEncoder(config)
+            text_encoder.load_state_dict(torch.load(text_encoder_path, map_location=config.device))
+            text_encoder.to(config.device)
+            text_encoder.eval()
+            
+            print("✓ Pre-trained text encoder loaded successfully")
+            
+            # Train sensor encoder
+            sensor_encoder = train_phase2_sensor_encoder(config, text_encoder, interpretations_file)
+            
+            if sensor_encoder:
+                print("✓ Training sensor encoder completed successfully!")
+            else:
+                print("✗ Training sensor encoder failed!")
+                
+        except Exception as e:
+            print(f"⨺ Error during training sensor encoder: {e}")
+            import traceback
+            traceback.print_exc()
+
+    elif args.mode == 'evaluate_sensor':
+        # Evaluate sensor encoder only
+        print("\nEvaluating Sensor Encoder...")
+        try:
+            # Check if models exist
+            text_encoder_path = "checkpoints/text_encoder_trained.pth"
+            sensor_encoder_path = "checkpoints/sensor_encoder_trained.pth"
+            interpretations_file = "outputs/semantic_interpretations.json"
+            
+            if not os.path.exists(text_encoder_path):
+                print("⨺ Pre-trained text encoder not found. Please run 'train' mode first.")
+                return
+            
+            if not os.path.exists(sensor_encoder_path):
+                print("⨺ Trained sensor encoder not found. Please run 'train' or 'train_sensor_encoder' mode first.")
+                return
+            
+            if not os.path.exists(interpretations_file):
+                print("⨺ Semantic interpretations file not found. Please run 'generate' mode first.")
+                return
+            
+            # Load models
+            from models.text_encoder import TextEncoder
+            from models.sensor_encoder import SensorEncoder
+            
+            text_encoder = TextEncoder(config)
+            text_encoder.load_state_dict(torch.load(text_encoder_path, map_location=config.device))
+            text_encoder.to(config.device)
+            text_encoder.eval()
+            
+            sensor_encoder = SensorEncoder(config)
+            sensor_encoder.load_state_dict(torch.load(sensor_encoder_path, map_location=config.device))
+            sensor_encoder.to(config.device)
+            sensor_encoder.eval()
+            
+            print("✓ Models loaded successfully")
+            
+            # Evaluate sensor encoder
+            sensor_evaluator = SensorEncoderEvaluator(config, sensor_encoder, text_encoder)
+            results = sensor_evaluator.comprehensive_evaluation(interpretations_file)
+            
+            if results:
+                print("✓ Sensor encoder evaluation completed successfully!")
+            else:
+                print("✗ Sensor encoder evaluation failed!")
+                
+        except Exception as e:
+            print(f"⨺ Error during sensor encoder evaluation: {e}")
+            import traceback
+            traceback.print_exc()
 
     elif args.mode == 'generate':
         # Generate semantic interpretations only
@@ -426,8 +589,13 @@ def main():
                 print("⨺  Semantic interpretations file is not found. Please generate interpretations first.")
                 return
             
+            # Load text encoder
+            text_encoder = TextEncoder(config).to(config.device)
+            text_encoder.load_state_dict(torch.load(model_path, map_location=config.device))
+            text_encoder.eval()
+            
             # Evaluation execution
-            evaluator = TextEncoderEvaluator(config, model_path=model_path)
+            evaluator = TextEncoderEvaluator(config, text_encoder=text_encoder)
             results = evaluator.comprehensive_evaluation(interpretations_file)
             
             # Result output
