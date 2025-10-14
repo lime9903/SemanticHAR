@@ -489,9 +489,12 @@ class TextEncoderTrainer:
         print("Starting Text Encoder Training with Semantic Interpretations")
         print("=" * 50)
         
-        # Prepare data (train and validation) - JSON loaded only once
-        train_dataset = prepare_training_data(interpretations_file, splits=['train'])
-        val_dataset = prepare_training_data(interpretations_file, splits=['val'])
+        # Prepare data (train and validation) - Use home_b only
+        # home_a is reserved for sensor encoder inference
+        print("⚠️  Using home_b TRAIN+VAL data for text encoder training")
+        print("    (home_a reserved for sensor encoder inference)")
+        train_dataset = prepare_training_data(interpretations_file, splits=['train'], home_filter=['home_b'])
+        val_dataset = prepare_training_data(interpretations_file, splits=['val'], home_filter=['home_b'])
         
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
@@ -745,23 +748,31 @@ def load_interpretations_from_json(json_file: str) -> Tuple[List[Dict], Dict[str
     return all_sensor_data, activity_interpretations
 
 
-def prepare_training_data(interpretations_file: str, splits: List[str] = ['train']) -> InterpretationDataset:
+def prepare_training_data(interpretations_file: str, splits: List[str] = ['train'], 
+                         home_filter: Optional[List[str]] = None) -> InterpretationDataset:
     """Prepare training data for specific splits (train/val/test)
     
     Args:
         interpretations_file: Path to JSON file
         splits: List of splits to include (e.g., ['train'], ['val'], ['train', 'val'], ['test'])
+        home_filter: List of home IDs to include (e.g., ['home_a'], ['home_b'])
     """
     print(f"Loading interpretations from: {interpretations_file} for splits: {splits}")
+    if home_filter:
+        print(f"  Filtering for homes: {home_filter}")
     
     # Load all data and filter by splits
     all_sensor_data, activity_interpretations = load_interpretations_from_json(interpretations_file)
     
-    # Filter data by splits
+    # Filter data by splits and homes
     split_data = [item for item in all_sensor_data if item['split'] in splits]
     
+    # Apply home filter if specified
+    if home_filter:
+        split_data = [item for item in split_data if item['home_id'] in home_filter]
+    
     if not split_data:
-        raise ValueError(f"No valid data found for splits {splits} in the JSON file")
+        raise ValueError(f"No valid data found for splits {splits} and homes {home_filter} in the JSON file")
     
     # Extract data for the dataset
     sensor_interpretations = [item['interpretation'] for item in split_data]
@@ -1350,12 +1361,18 @@ class TextEncoderEvaluator:
         with open(interpretations_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        # Sensor interpretations extraction
+        # Sensor interpretations extraction (use home_b train data only)
         sensor_interpretations = []
         activity_interpretations = []
         activities = []
         
+        print("⚠️  Using home_b TRAIN data for text encoder evaluation")
+        
         for home_id, home_data in data['sensor_interpretations'].items():
+            # Only use home_b for evaluation
+            if home_id != 'home_b':
+                continue
+                
             for split, windows in home_data.items():
                 if split == 'train':  # train data only
                     for window_id, window_data in windows.items():
