@@ -54,8 +54,6 @@ ehthumbs.db
 Thumbs.db
 
 # Project specific
-outputs/
-# data/
 *.log
 *.out
 
