@@ -7,9 +7,6 @@ import sys
 import argparse
 import json
 import torch
-import numpy as np
-from typing import Dict, List
-from datetime import datetime
 
 # Add project root to Python path
 sys.path.append('/workspace/semantic')
@@ -46,64 +43,7 @@ def setup_environment():
     print("Output directories created")
 
 
-def save_time_windows(sensor_data: Dict, config: SemanticHARConfig) -> str:
-    """Save time windows to JSON file"""
-    print("=" * 50)
-    print("Step 1: Save Time Windows")
-    print("=" * 50)
-    
-    # Prepare time windows data for saving
-    time_windows_data = {
-        'generation_info': {
-            'timestamp': datetime.now().isoformat(),
-            'dataset': config.dataset_name,
-            'window_size_seconds': config.window_size_seconds,
-            'overlap_ratio': config.overlap_ratio
-        },
-        'time_windows': {}
-    }
-    
-    for home_id in ['home_a', 'home_b']:
-        time_windows_data['time_windows'][home_id] = {
-            'train': [],
-            'val': [],
-            'test': []
-        }
-        
-        for split in ['train', 'val', 'test']:
-            windows = sensor_data[home_id][split]
-            for i, window in enumerate(windows):
-                window_info = {
-                    'window_id': f'{home_id}_{split}_{i+1}',
-                    'activity': window['activity'].iloc[0] if 'activity' in window.columns else 'Unknown',
-                    'sensor_events': len(window),
-                    'window_duration': window['window_duration'].iloc[0] if 'window_duration' in window.columns else 60,
-                    'window_start': window['window_start'].iloc[0] if 'window_start' in window.columns else 'N/A',
-                    'window_end': window['window_end'].iloc[0] if 'window_end' in window.columns else 'N/A',
-                    'sensor_types': window['sensor_type'].unique().tolist() if 'sensor_type' in window.columns else [],
-                    'locations': window['sensor_location'].unique().tolist() if 'sensor_location' in window.columns else [],
-                    'places': window['sensor_place'].unique().tolist() if 'sensor_place' in window.columns else []
-                }
-                time_windows_data['time_windows'][home_id][split].append(window_info)
-    
-    # Save time windows
-    time_windows_file = f"outputs/time_windows.json"
-    
-    with open(time_windows_file, 'w', encoding='utf-8') as f:
-        json.dump(time_windows_data, f, ensure_ascii=False, indent=2, default=str)
-    
-    print(f"Time windows saved to: {time_windows_file}")
-    print(f"Home A train: {len(sensor_data['home_a']['train'])} windows")
-    print(f"Home A val: {len(sensor_data['home_a']['val'])} windows")
-    print(f"Home A test: {len(sensor_data['home_a']['test'])} windows")
-    print(f"Home B train: {len(sensor_data['home_b']['train'])} windows")
-    print(f"Home B val: {len(sensor_data['home_b']['val'])} windows")
-    print(f"Home B test: {len(sensor_data['home_b']['test'])} windows")
-    
-    return time_windows_file
-
-
-def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, max_activity_interpretations: int = 20):
+def train_lanhar(config: SemanticHARConfig):
     """SemanticHAR System Training Pipeline"""
     print('\n' + "=" * 60)
     print("SemanticHAR System Training Pipeline")
@@ -114,72 +54,62 @@ def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, ma
     sensor_encoder = None
     
     # Step 1: Load sensor data
-    print(f"\nLoading {config.dataset_name} sensor data...")
-    time_windows_file = "outputs/time_windows.json"
+    print('\n' + "-" * 60)
+    print("Step 1: Load raw sensor data")
+    print("-" * 60)
+    
+    print(f"Source dataset: {config.source_dataset}")
+    print(f"Target dataset: {config.target_dataset}")
 
-    if os.path.exists(time_windows_file):
-        print(f"Loading time windows from: {time_windows_file}")
+    if os.path.exists(config.time_windows_file):
+        print(f"Loading time windows from: {config.time_windows_file}")
         try:
             # Load time windows from JSON
-            with open(time_windows_file, 'r') as f:
+            with open(config.time_windows_file, 'r') as f:
                 time_windows_data = json.load(f)
             
-            # Convert JSON data to sensor_data format
-            sensor_data = {}
-            for home_id in ['home_a', 'home_b']:
-                sensor_data[home_id] = {}
-                for split in ['train', 'val', 'test']:
-                    windows = time_windows_data['time_windows'][home_id][split]
-                    # Convert window info back to DataFrame format (simplified)
-                    sensor_data[home_id][split] = windows
+            sensor_data = {
+                'train': {},
+                'val': {},
+                'test': {}
+            }
             
-            print(f"✓ Time windows loaded from JSON successfully")
-            print(f"   - Home A: {len(sensor_data['home_a']['train'])} train, {len(sensor_data['home_a']['val'])} val, {len(sensor_data['home_a']['test'])} test")
-            print(f"   - Home B: {len(sensor_data['home_b']['train'])} train, {len(sensor_data['home_b']['val'])} val, {len(sensor_data['home_b']['test'])} test")
+            for split in ['train', 'val', 'test']:
+                if split in time_windows_data['time_windows']:
+                    sensor_data[split] = time_windows_data['time_windows'][split]
+            
+            print(f"✓ Time windows loaded from JSON")
             
         except Exception as e:
-            print(f"  ⨺ Failed to load time windows from JSON: {e}")
-            print("  Falling back to loading sensor data from scratch...")
+            print(f"  ✗ Failed to load time windows from JSON: {e}")
+            print("  Falling back to loading sensor data...")
             try:
-                sensor_data = load_sensor_data(
-                    config=config,
-                    dataset_name=config.dataset_name,
-                    window_size_seconds=config.window_size_seconds,
-                    overlap_ratio=config.overlap_ratio
-                )
+                sensor_data = load_sensor_data(config)
                 print("✓ Sensor data loaded successfully")
-                print(f"   - Home A: {len(sensor_data['home_a']['train'])} train, {len(sensor_data['home_a']['val'])} val, {len(sensor_data['home_a']['test'])} test")
-                print(f"   - Home B: {len(sensor_data['home_b']['train'])} train, {len(sensor_data['home_b']['val'])} val, {len(sensor_data['home_b']['test'])} test")
+
             except Exception as e2:
-                print(f"⨺ Failed to load sensor data: {e2}")
+                print(f"✗ Failed to load sensor data: {e2}")
                 return None, None
     else:
         try:
-            sensor_data = load_sensor_data(
-                config=config,
-                dataset_name=config.dataset_name,
-                window_size_seconds=config.window_size_seconds,
-                overlap_ratio=config.overlap_ratio
-            )
-            print(f"✓ Sensor data loaded successfully: {time_windows_file}")
-            print(f"   - Home A: {len(sensor_data['home_a']['train'])} train, {len(sensor_data['home_a']['val'])} val, {len(sensor_data['home_a']['test'])} test")
-            print(f"   - Home B: {len(sensor_data['home_b']['train'])} train, {len(sensor_data['home_b']['val'])} val, {len(sensor_data['home_b']['test'])} test")
-            
-            # Save time windows
-            time_windows_file = save_time_windows(sensor_data, config)
+            sensor_data = load_sensor_data(config)
+            print(f"✓ Sensor data loaded successfully")
             
         except Exception as e:
-            print(f"⨺ Failed to load sensor data: {e}")
+            print(f"✗ Failed to load sensor data: {e}")
             return None, None
     
     # Step 2: Generate semantic interpretations
-    interpretations_file = "outputs/semantic_interpretations.json"
-    if os.path.exists(interpretations_file):
-        print(f"Loading semantic interpretations from: {interpretations_file}")
+    print('\n' + "-" * 60)
+    print("Step 2: Generate semantic interpretations")
+    print("-" * 60)
+
+    if os.path.exists(config.semantic_interpretations_file):
+        print(f"Loading semantic interpretations from: {config.semantic_interpretations_file}")
         
         # Verify the file contains valid interpretations
         try:
-            with open(interpretations_file, 'r') as f:
+            with open(config.semantic_interpretations_file, 'r') as f:
                 interpretations_data = json.load(f)
             
             # Count valid interpretations
@@ -196,40 +126,36 @@ def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, ma
             print(f"✓ Loaded {sensor_count} sensor interpretations and {activity_count} activity interpretations")
             
         except Exception as e:
-            print(f"⨺ Failed to load semantic interpretations from JSON: {e}")
+            print(f"✗ Failed to load semantic interpretations from JSON: {e}")
             print("  Falling back to generating new interpretations...")
             # Generate new interpretations using SemanticGenerator
             generator = SemanticGenerator(config)
             interpretations_file = generator.generate_interpretations(
-                dataset_name=config.dataset_name,
+                source_dataset=config.source_dataset,
+                target_dataset=config.target_dataset,
                 window_size_seconds=config.window_size_seconds,
-                overlap_ratio=config.overlap_ratio,
-                max_windows_per_home=config.max_windows_per_home,
-                max_activity_interpretations=config.max_activity_interpretations,
-                splits=['train', 'val', 'test']
+                overlap_ratio=config.overlap_ratio
             )
             if not interpretations_file:
-                print("⨺ Cannot proceed without semantic interpretations")
+                print("✗ Cannot proceed without semantic interpretations")
                 return None, None
     else:
         # Generate new interpretations using SemanticGenerator
         generator = SemanticGenerator(config)
         interpretations_file = generator.generate_interpretations(
-            dataset_name=config.dataset_name,
+            source_dataset=config.source_dataset,
+            target_dataset=config.target_dataset,
             window_size_seconds=config.window_size_seconds,
-            overlap_ratio=config.overlap_ratio,
-            max_windows_per_home=config.max_windows_per_home,
-            max_activity_interpretations=config.max_activity_interpretations,
-            splits=['train', 'val', 'test']
+            overlap_ratio=config.overlap_ratio
         )
         if not interpretations_file:
-            print("⨺ Cannot proceed without semantic interpretations")
+            print("✗ Cannot proceed without semantic interpretations")
             return None, None
     
     # Step 3: Train or load text encoder
-    print("\n" + "=" * 60)
-    print("Step 3: Text Encoder Training")
-    print("=" * 60)
+    print("\n" + "-" * 60)
+    print("Step 3-1: Text Encoder Training")
+    print("-" * 60)
     
     try:
         # Check if trained text encoder exists
@@ -253,48 +179,48 @@ def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, ma
             print(f"  Model location: {text_encoder_checkpoint}")
             
         else:
-            print("⨺ Trained text encoder not found.")
+            print("✗ Trained text encoder not found.")
             print(f"  Expected location: {text_encoder_checkpoint}")
             print("  Starting new training...")
             
             # Train text encoder
-            text_encoder = text_encoder_trainer.train_with_interpretations(
-                interpretations_file=interpretations_file,
-                num_epochs=config.num_epochs,
-                batch_size=config.batch_size,
+            text_encoder = text_encoder_trainer.train_text_encoder(
+                interpretations_file=config.semantic_interpretations_file,
+                num_epochs=config.text_encoder_num_epochs,
+                batch_size=config.text_encoder_batch_size,
                 early_stopping=config.early_stopping,
                 patience=config.patience
             )
         
         if not text_encoder:
-            print("⨺ Cannot proceed without trained text encoder")
+            print("✗ Cannot proceed without trained text encoder")
             return None, None
             
     except Exception as e:
-        print(f"⨺ Error during text encoder loading/training: {e}")
+        print(f"✗ Error during text encoder loading/training: {e}")
         import traceback
         traceback.print_exc()
         return None, None
     
     # Evaluate text encoder
-    print("\n" + "=" * 60)
-    print("Text Encoder Evaluation")
-    print("=" * 60)
+    print("\n" + "-" * 60)
+    print("Step 3-2: Text Encoder Evaluation")
+    print("-" * 60)
     
     try:
         evaluator = TextEncoderEvaluator(config, text_encoder=text_encoder)
-        evaluation_results = evaluator.comprehensive_evaluation(interpretations_file)
+        evaluation_results = evaluator.comprehensive_evaluation(config.semantic_interpretations_file)
 
     except Exception as e:
-        print(f"⨺ Error during text encoder evaluation: {e}")
+        print(f"✗ Error during text encoder evaluation: {e}")
         import traceback
         traceback.print_exc()
 
     
     # Step 4: Train sensor encoder
-    print("\n" + "=" * 60)
-    print("Step 4: Sensor Encoder Training")
-    print("=" * 60)
+    print("\n" + "-" * 60)
+    print("Step 4-1: Sensor Encoder Training")
+    print("-" * 60)
 
     try:
         # Check if trained sensor encoder exists
@@ -318,24 +244,24 @@ def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, ma
             print(f"  Model location: {sensor_encoder_checkpoint}")
             
         else:
-            print("⨺  Trained sensor encoder not found.")
+            print("✗  Trained sensor encoder not found.")
             print(f"  Expected location: {sensor_encoder_checkpoint}")
             print("  Starting new training...")
             
             # Train sensor encoder
             sensor_encoder = sensor_trainer.train_with_interpretations(
-                interpretations_file=interpretations_file,
-                num_epochs=config.num_epochs,
-                batch_size=config.batch_size,
+                interpretations_file=config.semantic_interpretations_file,
+                num_epochs=config.sensor_encoder_num_epochs,
+                batch_size=config.sensor_encoder_batch_size,
                 early_stopping=config.early_stopping,
                 patience=config.patience
             )
         
         if not sensor_encoder:
-            print("⨺ Cannot proceed without trained sensor encoder")
+            print("✗ Cannot proceed without trained sensor encoder")
                     
     except Exception as e:
-        print(f"⨺ Error during sensor encoder loading/training: {e}")
+        print(f"✗ Error during sensor encoder loading/training: {e}")
         import traceback
         traceback.print_exc()
 
@@ -343,9 +269,9 @@ def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, ma
         print("✓ Sensor encoder training completed successfully!")
         
         # Evaluate sensor encoder
-        print("\n" + "=" * 60)
-        print("Sensor Encoder Evaluation")
-        print("=" * 60)
+        print("\n" + "-" * 60)
+        print("Step 4-2: Sensor Encoder Evaluation")
+        print("-" * 60)
         
         try:
             sensor_evaluator = SensorEncoderEvaluator(config, sensor_encoder, text_encoder)
@@ -354,15 +280,15 @@ def train_lanhar(config: SemanticHARConfig, max_windows_per_home: int = None, ma
             if sensor_evaluation_results:
                 print("✓ Sensor encoder evaluation completed successfully!")
             else:
-                print("⨺ Sensor encoder evaluation failed!")
+                print("✗ Sensor encoder evaluation failed!")
                 
         except Exception as e:
-            print(f"⨺ Error during sensor encoder evaluation: {e}")
+            print(f"✗ Error during sensor encoder evaluation: {e}")
             import traceback
             traceback.print_exc()
             sensor_evaluation_results = None
     else:
-        print("⨺ Training sensor encoder failed!")
+        print("✗ Training sensor encoder failed!")
         sensor_evaluation_results = None
     
     print("\nSemanticHAR System Training Pipeline Completed!")
@@ -379,27 +305,20 @@ def main():
     
     parser = argparse.ArgumentParser(description='SemanticHAR System')
     parser.add_argument('--mode', type=str, default='train', 
-                       choices=['train', 'generate', 'inference'],
+                       choices=['train', 'inference', 'generate'],
                        help='Execution mode')
-    parser.add_argument('--dataset', type=str, default='UCI_ADL',
-                       choices=['UCI_ADL', 'MARBLE'],
-                       help='Dataset to use')
+    parser.add_argument('--source_dataset', type=str, default='UCI_ADL_home_b',
+                       choices=['UCI_ADL_home_b', 'UCI_ADL_home_a', 'MARBLE'],
+                       help='Source dataset')
+    parser.add_argument('--target_dataset', type=str, default='UCI_ADL_home_a',
+                       choices=['UCI_ADL_home_b', 'UCI_ADL_home_a', 'MARBLE'],
+                       help='Target dataset')
     parser.add_argument('--window_size', type=int, default=60,
                        help='Time window size in seconds')
     parser.add_argument('--overlap', type=float, default=0.8,
                        help='Window overlap ratio')
-    parser.add_argument('--batch_size', type=int, default=32,
-                       help='Batch size for training')
-    parser.add_argument('--epochs', type=int, default=100,
-                       help='Number of epochs')
-    parser.add_argument('--learning_rate', type=float, default=2e-5,
-                       help='Learning rate')
     parser.add_argument('--api_key', type=str, default=None,
                        help='OpenAI API key (optional, can use OPENAI_API_KEY env var)')
-    parser.add_argument('--max_windows', type=int, default=10000,
-                       help='Maximum number of windows per home for processing')
-    parser.add_argument('--max_activities', type=int, default=20,
-                       help='Maximum number of activities for interpretation')
     
     args = parser.parse_args()
     
@@ -410,37 +329,31 @@ def main():
     config = SemanticHARConfig()
     
     # Override configuration with command line arguments
-    if args.batch_size:
-        config.batch_size = args.batch_size
-    if args.epochs:
-        config.num_epochs = args.epochs
-    if args.learning_rate:
-        config.learning_rate = args.learning_rate
-    if args.max_windows:
-        config.max_windows_per_home = args.max_windows
-    if args.max_activities:
-        config.max_activity_interpretations = args.max_activities
     if args.api_key:
         os.environ['OPENAI_API_KEY'] = args.api_key
-    if args.dataset:
-        config.dataset_name = args.dataset
     if args.window_size:
         config.window_size_seconds = args.window_size
     if args.overlap:
         config.overlap_ratio = args.overlap
+    if args.source_dataset:
+        config.source_dataset = args.source_dataset
+    if args.target_dataset:
+        config.target_dataset = args.target_dataset
 
     print(f"Configuration:")
-    print(f"  - Dataset: {config.dataset_name}")
+    print(f"  - Source Dataset: {config.source_dataset}")
+    print(f"  - Target Dataset: {config.target_dataset}")
     print(f"  - Window size: {config.window_size_seconds}s")
     print(f"  - Overlap: {config.overlap_ratio}")
-    print(f"  - Batch size: {config.batch_size}")
-    print(f"  - Epochs: {config.num_epochs}")
-    print(f"  - Learning rate: {config.learning_rate}")
-    print(f"  - Max windows per home: {config.max_windows_per_home}")
-    print(f"  - Max activity interpretations: {config.max_activity_interpretations}")
+    print(f"  - Text Encoder Batch size: {config.text_encoder_batch_size}")
+    print(f"  - Text Encoder Epochs: {config.text_encoder_num_epochs}")
+    print(f"  - Text Encoder Learning rate: {config.text_encoder_learning_rate}")
+    print(f"  - Sensor Encoder Batch size: {config.sensor_encoder_batch_size}")
+    print(f"  - Sensor Encoder Epochs: {config.sensor_encoder_num_epochs}")
+    print(f"  - Sensor Encoder Learning rate: {config.sensor_encoder_learning_rate}")
     
     if args.mode == 'train':
-        text_encoder, sensor_encoder = train_lanhar(config, args.max_windows, args.max_activities)
+        text_encoder, sensor_encoder = train_lanhar(config)
         
         if text_encoder and sensor_encoder:
             print("\n✓ Both text encoder and sensor encoder training completed successfully!")
@@ -463,22 +376,24 @@ def main():
                         print(f"  Final Accuracy: {inference_results['accuracy']:.4f}")
                         print(f"  Final F1-Score: {inference_results['f1']:.4f}")
                 else:
-                    print("⨺ Semantic interpretations file not found. Skipping inference.")
+                    print("✗ Semantic interpretations file not found. Skipping inference.")
                     
             except Exception as e:
-                print(f"⨺ Error during inference: {e}")
+                print(f"✗ Error during inference: {e}")
                 import traceback
                 traceback.print_exc()
                 
         elif text_encoder:
             print("\n✓ Text encoder training completed successfully!")
-            print("⨺ Training sensor encoder failed!")
+            print("✗ Training sensor encoder failed!")
         else:
             print("\n✗ Training failed!")
 
     elif args.mode == 'inference':
-        # Run inference only
-        print("\nRunning Inference...")
+        print("\n" + "-" * 60)
+        print("Only Inference Mode")
+        print("-" * 60)
+        
         try:
             # Load trained models
             text_encoder_path = "checkpoints/text_encoder_trained.pth"
@@ -486,15 +401,15 @@ def main():
             interpretations_file = "outputs/semantic_interpretations.json"
             
             if not os.path.exists(text_encoder_path):
-                print("⨺ Trained text encoder not found. Please run 'train' mode first.")
+                print("✗ Trained text encoder not found. Please run 'train' mode first.")
                 return
             
             if not os.path.exists(sensor_encoder_path):
-                print("⨺ Trained sensor encoder not found. Please run 'train' mode first.")
+                print("✗ Trained sensor encoder not found. Please run 'train' mode first.")
                 return
             
             if not os.path.exists(interpretations_file):
-                print("⨺ Semantic interpretations file not found. Please run 'generate' mode first.")
+                print("✗ Semantic interpretations file not found. Please run 'train' or 'generate' mode first.")
                 return
             
             # Load text encoder
@@ -524,40 +439,39 @@ def main():
                 print("✗ Inference failed!")
                 
         except Exception as e:
-            print(f"⨺ Error during inference: {e}")
+            print(f"✗ Error during inference: {e}")
             import traceback
             traceback.print_exc()
 
     elif args.mode == 'generate':
-        # Generate semantic interpretations only
-        print("\nGenerating semantic interpretations...")
+        print("\n" + "-" * 60)
+        print("Only Generate Mode")
+        print("-" * 60)
+        
         try:
             generator = SemanticGenerator(config)
 
-            if os.path.exists("outputs/semantic_interpretations.json"):
-                print("Loading semantic interpretations from existing JSON file...")
-                interpretations_file = "outputs/semantic_interpretations.json"
-                interpretations_data = generator.load_interpretations(interpretations_file)
+            if os.path.exists(config.semantic_interpretations_file):
+                print(f"Loading semantic interpretations from: {config.semantic_interpretations_file}")
+                interpretations_data = generator.load_interpretations(config.semantic_interpretations_file)
             else:
-                print("Generating semantic interpretations...")
+                print(f"Generating semantic interpretations to: {config.semantic_interpretations_file}")
                 
                 interpretations_file = generator.generate_interpretations(
                     dataset_name=config.dataset_name,
                     window_size_seconds=config.window_size_seconds,
                     overlap_ratio=config.overlap_ratio,
-                    max_windows_per_home=args.max_windows,
-                    max_activity_interpretations=args.max_activities,
-                    splits=['train', 'val', 'test']
+                    output_file=config.semantic_interpretations_file
                 )
             
-            if interpretations_file:
-                print(f"✓ Semantic interpretations generated: {interpretations_file}")
-                summary = generator.get_interpretations_summary(interpretations_file)
+            if config.semantic_interpretations_file:
+                print(f"✓ Semantic interpretations generated: {config.semantic_interpretations_file}")
+                summary = generator.get_interpretations_summary(config.semantic_interpretations_file)
             else:
                 print("✗ Failed to generate semantic interpretations")
                 
         except Exception as e:
-            print(f"⨺ Error generating interpretations: {e}")
+            print(f"✗ Error generating interpretations: {e}")
     
     print("\nExecution completed!")
 

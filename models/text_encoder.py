@@ -35,9 +35,8 @@ class TextEncoder(nn.Module):
         self.tokenizer = BertTokenizer.from_pretrained(config.text_encoder_model)
         
         self.hidden_dim = self.bert.config.hidden_size  # 768
-        self.output_dim = config.sensor_encoder_hidden_dim  # 768 (now matches)
+        self.output_dim = config.sensor_encoder_hidden_dim  # 768
         
-        # Improved projection layer for better reconstruction
         self.projection = nn.Sequential(
             nn.Linear(self.hidden_dim, self.hidden_dim),
             nn.ReLU(),
@@ -85,41 +84,35 @@ class TextDecoder(nn.Module):
         self.config = config
         self.vocab_size = vocab_size
         
-        # Improved decoder with better architecture
         decoder_layer = nn.TransformerDecoderLayer(
-            d_model=config.sensor_encoder_hidden_dim,
-            nhead=config.sensor_encoder_heads,
-            dim_feedforward=config.sensor_encoder_hidden_dim * 4,  # Increased capacity
-            dropout=0.1,  # Reduced dropout for better learning
+            d_model=config.text_encoder_hidden_dim,
+            nhead=config.text_encoder_heads,
+            dim_feedforward=config.text_encoder_hidden_dim * 4,
+            dropout=0.1,
             batch_first=True,
-            norm_first=True  # Pre-norm for better training stability
+            norm_first=True
         )
         
-        # More layers for better reconstruction capability
         self.transformer_decoder = nn.TransformerDecoder(
             decoder_layer, 
-            num_layers=4  # Increased from config layers
+            num_layers=4
         )
-        
-        # Better regularization
+
         self.dropout = nn.Dropout(0.1)
-        self.layer_norm = nn.LayerNorm(config.sensor_encoder_hidden_dim)
+        self.layer_norm = nn.LayerNorm(config.text_encoder_hidden_dim)
         
-        # Improved output projection
         self.output_projection = nn.Sequential(
-            nn.Linear(config.sensor_encoder_hidden_dim, config.sensor_encoder_hidden_dim * 2),
+            nn.Linear(config.text_encoder_hidden_dim, config.text_encoder_hidden_dim * 2),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(config.sensor_encoder_hidden_dim * 2, vocab_size)
+            nn.Linear(config.text_encoder_hidden_dim * 2, vocab_size)
         )
         
-        # Better embedding initialization
-        self.embedding = nn.Embedding(vocab_size, config.sensor_encoder_hidden_dim)
+        self.embedding = nn.Embedding(vocab_size, config.text_encoder_hidden_dim)
         self.positional_encoding = nn.Parameter(
-            torch.randn(1000, config.sensor_encoder_hidden_dim) * 0.1  # Smaller initialization
+            torch.randn(1000, config.text_encoder_hidden_dim) * 0.1
         )
         
-        # Initialize weights properly
         self._init_weights()
     
     def _init_weights(self):
@@ -262,8 +255,8 @@ class TextEncoderTrainer:
         self.optimizer = torch.optim.AdamW(
             list(self.text_encoder.parameters()) + 
             list(self.text_decoder.parameters()),
-            lr=config.learning_rate,
-            weight_decay=config.weight_decay
+            lr=config.text_encoder_learning_rate,
+            weight_decay=config.text_encoder_weight_decay
         )
         
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -306,18 +299,10 @@ class TextEncoderTrainer:
             sensor_embeddings, sensor_interpretations
         )
         
-        # Activity-side reconstruction loss (Sl -> H -> g_de -> Sl_hat)
-        activity_reconstruction_loss = self._compute_reconstruction_loss(
-            activity_embeddings, activity_interpretations
-        )
-        
-        # Combine reconstruction losses
-        total_reconstruction_loss = reconstruction_loss + activity_reconstruction_loss
-        
         total_loss = (
             alignment_loss + 
             self.config.alpha * (sensor_category_loss + activity_category_loss + activity_contrastive_loss) +
-            self.config.beta * total_reconstruction_loss
+            self.config.beta * reconstruction_loss
         )
         
         total_loss.backward()
@@ -336,14 +321,14 @@ class TextEncoderTrainer:
             'sensor_category_loss': sensor_category_loss.item(),
             'activity_category_loss': activity_category_loss.item(),
             'activity_contrastive_loss': activity_contrastive_loss.item(),
-            'reconstruction_loss': total_reconstruction_loss.item()
+            'reconstruction_loss': reconstruction_loss.item()
         }
     
     def _validation_step(self, sensor_interpretations: List[str], 
                         activity_interpretations: List[str],
                         activity_categories: torch.Tensor,
                         activity_indices: torch.Tensor) -> torch.Tensor:
-        """Validation step without gradient computation - computes full loss"""
+        """Validation step without gradient computation"""
         sensor_embeddings = self.text_encoder(sensor_interpretations)
         activity_embeddings = self.text_encoder(activity_interpretations)
         
@@ -371,18 +356,11 @@ class TextEncoderTrainer:
             sensor_embeddings, sensor_interpretations
         )
         
-        # Activity-side reconstruction loss
-        activity_reconstruction_loss = self._compute_reconstruction_loss(
-            activity_embeddings, activity_interpretations
-        )
-        
-        total_reconstruction_loss = reconstruction_loss + activity_reconstruction_loss
-        
         # Total loss (same as training)
         total_loss = (
             alignment_loss + 
             self.config.alpha * (sensor_category_loss + activity_category_loss + activity_contrastive_loss) +
-            self.config.beta * total_reconstruction_loss
+            self.config.beta * reconstruction_loss
         )
         
         return total_loss
@@ -444,10 +422,9 @@ class TextEncoderTrainer:
             
         except Exception as e:
             # Fallback to simple regularization if reconstruction fails
-            print(f"⨺ Warning: Reconstruction loss computation failed: {e}")
+            print(f"✗ Warning: Reconstruction loss computation failed: {e}")
             print("  Falling back to regularization loss")
             
-            # Simple regularization loss as fallback
             regularization_loss = torch.mean(torch.norm(embeddings, p=2, dim=1))
             
             # Additional consistency loss
@@ -478,28 +455,19 @@ class TextEncoderTrainer:
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.scheduler.load_state_dict(checkpoint['scheduler'])
     
-    def train_with_interpretations(self, interpretations_file: str,
-                                 num_epochs: int = 10,
-                                 batch_size: int = 8,
-                                 early_stopping: bool = False,
-                                 patience: int = 10) -> 'TextEncoder':
+    def train_text_encoder(self, interpretations_file: str, num_epochs: int = 10,
+              batch_size: int = 8, early_stopping: bool = False, patience: int = 10) -> 'TextEncoder':
         """Train text encoder with semantic interpretations"""
-
-        print("=" * 50)
-        print("Starting Text Encoder Training with Semantic Interpretations")
-        print("=" * 50)
         
-        # Prepare data (train and validation) - Use home_b only
-        # home_a is reserved for sensor encoder inference
-        print("⚠️  Using home_b TRAIN+VAL data for text encoder training")
-        print("    (home_a reserved for sensor encoder inference)")
-        train_dataset = prepare_training_data(interpretations_file, splits=['train'], home_filter=['home_b'])
-        val_dataset = prepare_training_data(interpretations_file, splits=['val'], home_filter=['home_b'])
+        print("\n ⨠ Using home_b text_train and text_val splits")
+
+        train_dataset = prepare_training_data(interpretations_file, splits=['text_train'], home_filter=['home_b'])
+        val_dataset = prepare_training_data(interpretations_file, splits=['text_val'], home_filter=['home_b'])
         
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
         
-        print(f"Train dataset size: {len(train_dataset)}")
+        print(f"\nTrain dataset size: {len(train_dataset)}")
         print(f"Validation dataset size: {len(val_dataset)}")
         print(f"Batch size: {batch_size}")
         print(f"Number of epochs: {num_epochs}")
@@ -509,7 +477,7 @@ class TextEncoderTrainer:
             print(f"Validation batches: {len(val_dataloader)}")
         
         print(f"\nTraining Text Encoder...")
-        print("=" * 40)
+        print("-" * 40)
         
         # Early stopping variables initialization
         best_loss = float('inf')
@@ -541,7 +509,7 @@ class TextEncoderTrainer:
                     epoch_losses.append(losses['total_loss'])
                     
                 except Exception as e:
-                    print(f"⨺ Error in batch {batch_idx}: {e}")
+                    print(f"✗ Error in batch {batch_idx}: {e}")
                     continue
             
             if epoch_losses:
@@ -555,7 +523,6 @@ class TextEncoderTrainer:
                     val_losses = []
                     
                     with torch.no_grad():
-                        # Use tqdm to show progress for validation
                         for batch_idx, batch in enumerate(tqdm(val_dataloader, desc="  Validation", leave=False)):
                             try:
                                 sensor_interpretations = batch['sensor_interpretation']
@@ -576,7 +543,7 @@ class TextEncoderTrainer:
                                 val_losses.append(loss.item())
                                 
                             except Exception as e:
-                                print(f"⨺ Validation batch {batch_idx} error: {e}")
+                                print(f"✗ Validation batch {batch_idx} error: {e}")
                                 continue
                     
                     if val_losses:
@@ -608,12 +575,12 @@ class TextEncoderTrainer:
                                 print(f"   Best validation loss: {best_loss:.4f}")
                                 break
                     else:
-                        print("  ⨺ No valid validation batches")
+                        print("  ✗ No valid validation batches")
                     
                     # Return to training mode for next epoch
                     self.text_encoder.train()
             else:
-                print(f"⨺ Epoch {epoch+1}/{num_epochs} - No valid training batches processed")
+                print(f"✗ Epoch {epoch+1}/{num_epochs} - No valid training batches processed")
         
         print("\nText Encoder Training Completed!")
         
@@ -631,7 +598,7 @@ class TextEncoderTrainer:
                 os.rename(best_model_path, final_model_path)
                 print(f"✓ Best model renamed to final model: {final_model_path}")
             else:
-                print("⨺ Best model not found, saving current model")
+                print("✗ Best model not found, saving current model")
                 final_model_path = os.path.join(checkpoint_dir, "text_encoder_trained.pth")
                 torch.save(self.text_encoder.state_dict(), final_model_path)
                 print(f"✓ Final text encoder saved to: {final_model_path}")
@@ -672,7 +639,7 @@ class InterpretationDataset(Dataset):
             'Grooming': 1,
             'Spare_Time/TV': 3,
             'Leaving': 4,
-            'Snack': 2
+            'Snack': 3
         }
         
         # Activity to index mapping
@@ -707,7 +674,7 @@ class InterpretationDataset(Dataset):
 _loaded_data_cache = {}
 
 def load_interpretations_from_json(json_file: str) -> Tuple[List[Dict], Dict[str, str]]:
-    """Load interpretations from JSON file - returns all data with split info (cached)"""
+    """Load interpretations from JSON file"""
     
     # Check cache first
     if json_file in _loaded_data_cache:
@@ -722,9 +689,9 @@ def load_interpretations_from_json(json_file: str) -> Tuple[List[Dict], Dict[str
     activity_interpretations = {}
     
     # Load all sensor data with split information
-    for home_id in data['sensor_interpretations']:
-        for split in data['sensor_interpretations'][home_id]:
-            for window_id, window_data in data['sensor_interpretations'][home_id][split].items():
+    for split in data['sensor_interpretations']:
+        for home_id in data['sensor_interpretations'][split]:
+            for window_id, window_data in data['sensor_interpretations'][split][home_id].items():
                 if 'interpretation' in window_data and 'error' not in window_data:
                     all_sensor_data.append({
                         'interpretation': window_data['interpretation'],
@@ -748,13 +715,13 @@ def load_interpretations_from_json(json_file: str) -> Tuple[List[Dict], Dict[str
     return all_sensor_data, activity_interpretations
 
 
-def prepare_training_data(interpretations_file: str, splits: List[str] = ['train'], 
+def prepare_training_data(interpretations_file: str, splits: List[str] = ['text_train'], 
                          home_filter: Optional[List[str]] = None) -> InterpretationDataset:
     """Prepare training data for specific splits (train/val/test)
     
     Args:
         interpretations_file: Path to JSON file
-        splits: List of splits to include (e.g., ['train'], ['val'], ['train', 'val'], ['test'])
+        splits: List of splits to include (e.g., ['text_train'], ['text_val'], ['sensor_train', 'sensor_val'])
         home_filter: List of home IDs to include (e.g., ['home_a'], ['home_b'])
     """
     print(f"Loading interpretations from: {interpretations_file} for splits: {splits}")
@@ -779,10 +746,10 @@ def prepare_training_data(interpretations_file: str, splits: List[str] = ['train
     activities = [item['activity'] for item in split_data]
     
     if len(sensor_interpretations) == 0:
-        raise ValueError("⨺ No valid sensor interpretations found in the JSON file")
+        raise ValueError("✗ No valid sensor interpretations found in the JSON file")
     
     if len(activity_interpretations) == 0:
-        raise ValueError("⨺ No valid activity interpretations found in the JSON file")
+        raise ValueError("✗ No valid activity interpretations found in the JSON file")
     
     # Activity interpretations match with sensor interpretations
     activity_to_interpretation = {}
@@ -1361,24 +1328,22 @@ class TextEncoderEvaluator:
         with open(interpretations_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        # Sensor interpretations extraction (use home_b train data only)
+        # Sensor interpretations extraction (use home_b text_train for evaluation)
         sensor_interpretations = []
         activity_interpretations = []
         activities = []
         
-        print("⚠️  Using home_b TRAIN data for text encoder evaluation")
+        print("  Using home_b text_train for text encoder evaluation")
         
-        for home_id, home_data in data['sensor_interpretations'].items():
-            # Only use home_b for evaluation
-            if home_id != 'home_b':
-                continue
-                
-            for split, windows in home_data.items():
-                if split == 'train':  # train data only
-                    for window_id, window_data in windows.items():
-                        if 'interpretation' in window_data:
-                            sensor_interpretations.append(window_data['interpretation'])
-                            activities.append(window_data['activity'])
+        # New split-first structure: data['sensor_interpretations'][split][home_id]
+        if 'text_train' in data['sensor_interpretations']:
+            if 'home_b' in data['sensor_interpretations']['text_train']:
+                for window_id, window_data in data['sensor_interpretations']['text_train']['home_b'].items():
+                    if 'interpretation' in window_data:
+                        sensor_interpretations.append(window_data['interpretation'])
+                        activities.append(window_data['activity'])
+        
+        print(f"  Using {len(sensor_interpretations)} samples for evaluation (home_b text_train)")
         
         # Activity interpretations extraction and proper matching
         activity_interpretation_dict = {}
@@ -1522,8 +1487,8 @@ class TextEncoderEvaluator:
         category_names = {
             'category_0': 'Sleeping',
             'category_1': 'Bathroom (Toileting, Showering, Grooming)', 
-            'category_2': 'Meals (Breakfast, Lunch, Dinner, Snack)',
-            'category_3': 'Entertainment (TV)',
+            'category_2': 'Meals (Breakfast, Lunch, Dinner)',
+            'category_3': 'Entertainment (Spare_Time/TV, Snack)',
             'category_4': 'Leaving'
         }
         

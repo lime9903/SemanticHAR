@@ -39,7 +39,7 @@ class SensorEncoder(nn.Module):
         # Hidden dimension
         self.hidden_dim = config.sensor_encoder_hidden_dim
         
-        # Sensor type vocabulary (환경 센서 타입)
+        # Sensor type vocabulary
         self.sensor_types = ['PIR', 'Magnetic', 'Flush', 'Pressure', 'Electric', 'UNK']
         self.sensor_type_to_idx = {s: i for i, s in enumerate(self.sensor_types)}
         
@@ -107,7 +107,7 @@ class SensorEncoder(nn.Module):
         self.dropout = nn.Dropout(0.1)
         
     def _update_vocab(self, locations: List[str], places: List[str]):
-        """동적으로 위치/장소 vocabulary 업데이트"""
+        """Dynamically update location/place vocabulary"""
         for loc in locations:
             if loc not in self.location_to_idx:
                 idx = len(self.location_vocab)
@@ -180,7 +180,7 @@ class SensorEncoder(nn.Module):
             src_key_padding_mask=src_key_padding_mask
         )  # (B, E, H)
         
-        # Attention pooling (평균 임베딩을 쿼리로 사용)
+        # Attention pooling (use mean embedding as query)
         # Compute mean only over non-padded positions
         mask_expanded = (~src_key_padding_mask).unsqueeze(-1).float()  # (B, E, 1)
         masked_encoded = encoded * mask_expanded
@@ -247,7 +247,6 @@ class SensorEncoderTrainer:
         self.config = config
         self.device = torch.device(config.device)
         
-        # Initialize sensor encoder
         self.sensor_encoder = SensorEncoder(config).to(self.device)
         self.text_encoder = text_encoder  # Pre-trained text encoder (frozen)
         
@@ -255,16 +254,15 @@ class SensorEncoderTrainer:
         for param in self.text_encoder.parameters():
             param.requires_grad = False
         
-        # Optimizer for sensor encoder only
         self.optimizer = torch.optim.AdamW(
             self.sensor_encoder.parameters(),
-            lr=config.learning_rate,
-            weight_decay=0.01
+            lr=config.sensor_encoder_learning_rate,
+            weight_decay=config.sensor_encoder_weight_decay
         )
-        
-        # Scheduler
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=config.num_epochs
+         
+        # Use ReduceLROnPlateau instead of CosineAnnealingLR for better control
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode='min', factor=0.7, patience=5, verbose=True, min_lr=1e-7
         )
         
         print(f"✓ SensorEncoderTrainer initialized")
@@ -332,29 +330,34 @@ class SensorEncoderTrainer:
         print("=" * 60)
         print("Sensor Encoder Training")
         print("=" * 60)
-        print("Training sensor encoder to align with text encoder interpretations...")
-        print("⚠️  Using home_b TEST data for sensor encoder training")
-        print("    (home_b used for sensor encoder, home_a reserved for final inference)")
+        print("=" * 60)
+        print("DATA SPLIT STRATEGY (40/10/40/10):")
+        print("  home_b:")
+        print("    - text_train (40%):   Text Encoder training (already used)")
+        print("    - text_val (10%):     Text Encoder validation (already used)")
+        print("    - sensor_train (40%): Sensor Encoder training ← current")
+        print("    - sensor_val (10%):   Sensor Encoder validation ← current")
+        print("  home_a:")
+        print("    - all (100%):  Inference (completely unseen)")
+        print("  MARBLE:")
+        print("    - all (100%):  Final Test (different dataset)")
+        print("=" * 60)
         
-        # Use home_b test data (different home from text encoder)
-        all_data = self._prepare_training_data(interpretations_file, splits=['test'], home_filter=['home_b'])
+        print("\nTraining sensor encoder to align with text encoder interpretations...")
+        print("  Using home_b sensor_train and sensor_val splits")
         
-        # Split data into train/val for sensor encoder (90/10 split)
-        total_samples = len(all_data)
-        train_size = int(total_samples * 0.90)
+        # Use sensor_train and sensor_val splits directly
+        train_dataset = self._prepare_training_data(
+            interpretations_file, 
+            splits=['sensor_train'], 
+            home_filter=['home_b']
+        )
         
-        # Shuffle indices for better generalization
-        import random
-        indices = list(range(total_samples))
-        random.seed(42)  # For reproducibility
-        random.shuffle(indices)
-        
-        train_indices = indices[:train_size]
-        val_indices = indices[train_size:]
-        
-        # Create train/val datasets
-        train_dataset = self._create_subset_dataset(all_data, train_indices)
-        val_dataset = self._create_subset_dataset(all_data, val_indices)
+        val_dataset = self._prepare_training_data(
+            interpretations_file, 
+            splits=['sensor_val'], 
+            home_filter=['home_b']
+        )
         
         if len(train_dataset) == 0:
             raise ValueError("No training data found")
@@ -409,7 +412,7 @@ class SensorEncoderTrainer:
                         print(f"  Batch {batch_idx+1}/{len(train_dataloader)} - Loss: {current_loss:.4f}")
                     
                 except Exception as e:
-                    print(f"⨺ Training batch error: {e}")
+                    print(f"✗ Training batch error: {e}")
                     continue
             
             if epoch_losses:
@@ -436,9 +439,9 @@ class SensorEncoderTrainer:
                             print(f"  Loss Change: {loss_change:+.4f}")
                             
                             if loss_change > 0:
-                                print(f"  ⚠️  Loss increased by {loss_change:.4f}")
+                                print(f"  ↑  Loss increased by {loss_change:.4f}")
                             else:
-                                print(f"  ✓ Loss decreased by {abs(loss_change):.4f}")
+                                print(f"  ↓ Loss decreased by {abs(loss_change):.4f}")
                         
                         # Early stopping logic with detailed feedback
                         if val_loss < best_loss:
@@ -446,7 +449,7 @@ class SensorEncoderTrainer:
                             best_loss = val_loss
                             patience_counter = 0
                             
-                            print(f"  🎯 New best validation loss: {best_loss:.4f} (improvement: {improvement:.4f})")
+                            print(f"   New best validation loss: {best_loss:.4f} (improvement: {improvement:.4f})")
                             
                             # Save best model
                             import os
@@ -467,8 +470,9 @@ class SensorEncoderTrainer:
                 else:
                     print(f"  ⏭️  Skipping validation (early_stopping={early_stopping}, val_samples={len(val_dataset)})")
                 
-                # Update learning rate
-                self.scheduler.step()
+                # Update learning rate (use validation loss for ReduceLROnPlateau)
+                if val_loss is not None:
+                    self.scheduler.step(val_loss)
                 
                 # Training progress summary
                 if len(train_losses) > 1:
@@ -539,23 +543,26 @@ class SensorEncoderTrainer:
         sensor_interpretations = []
         activities = []
         
-        # Extract data from specified splits
-        for home_id in interpretations_data['sensor_interpretations']:
-            # Apply home filter if specified
-            if home_filter and home_id not in home_filter:
-                continue
-                
-            if home_id not in sensor_data_dict:
-                print(f"⚠️ Warning: {home_id} not found in sensor data")
+        # Extract data from specified splits (split-first structure)
+        # New structure: interpretations_data['sensor_interpretations'][split][home_id]
+        for split in interpretations_data['sensor_interpretations']:
+            if split not in splits:
                 continue
             
-            for split in interpretations_data['sensor_interpretations'][home_id]:
-                if split not in splits:
+            for home_id in interpretations_data['sensor_interpretations'][split]:
+                # Apply home filter if specified
+                if home_filter and home_id not in home_filter:
                     continue
                 
                 # Get windows for this split
-                interpretation_windows = interpretations_data['sensor_interpretations'][home_id][split]
-                raw_windows = sensor_data_dict[home_id].get(split, [])
+                interpretation_windows = interpretations_data['sensor_interpretations'][split][home_id]
+                
+                # Get raw sensor windows from split-first structure
+                if split not in sensor_data_dict:
+                    print(f"⚠️ Warning: {split} not found in sensor data")
+                    continue
+                    
+                raw_windows = sensor_data_dict[split].get(home_id, [])
                 
                 # Process each interpretation window
                 for window_key, window_data in interpretation_windows.items():
@@ -582,13 +589,6 @@ class SensorEncoderTrainer:
         
         return SensorEncoderDataset(sensor_events_list, sensor_interpretations, activities)
     
-    def _create_subset_dataset(self, dataset: SensorEncoderDataset, indices: List[int]) -> SensorEncoderDataset:
-        """Create a subset dataset from indices"""
-        subset_events = [dataset.sensor_events_list[i] for i in indices]
-        subset_interpretations = [dataset.sensor_interpretations[i] for i in indices]
-        subset_activities = [dataset.activities[i] for i in indices]
-        
-        return SensorEncoderDataset(subset_events, subset_interpretations, subset_activities)
     
     def _extract_sensor_events_from_df(self, window_df) -> Optional[Dict]:
         """Extract sensor events from DataFrame with actual temporal information"""
@@ -659,7 +659,7 @@ class SensorEncoderTrainer:
             }
             
         except Exception as e:
-            print(f"⚠️ Error extracting sensor events from DataFrame: {e}")
+            print(f"✗ Error extracting sensor events from DataFrame: {e}")
             return None
     
     def _collate_fn(self, batch: List[Dict]) -> Dict:
@@ -781,7 +781,7 @@ class SensorEncoderTrainer:
                     val_losses.append(loss.item())
                     
                 except Exception as e:
-                    print(f"⨺ Validation batch error: {e}")
+                    print(f"✗ Validation batch error: {e}")
                     continue
         
         self.sensor_encoder.train()
@@ -1076,10 +1076,10 @@ class SensorEncoderEvaluator:
         
         # Load home_a data for final evaluation
         # home_a is completely unseen by sensor encoder
-        print("⚠️  Using home_a ALL data for evaluation (completely unseen environment)")
+        print("⚠️  Using home_a inference split for evaluation (completely unseen environment)")
         test_dataset = temp_trainer._prepare_training_data(
             interpretations_file, 
-            splits=['train', 'val', 'test'],
+            splits=['inference'],
             home_filter=['home_a']
         )
         
@@ -1282,17 +1282,17 @@ class SensorEncoderInference:
         return embeddings
     
     def _load_test_data(self, interpretations_file: str) -> Dict:
-        """Load test data from home_a (completely unseen by sensor encoder)"""
+        """Load test data from home_a inference split (completely unseen by sensor encoder)"""
         from models.sensor_encoder import SensorEncoderTrainer
         
         # Create temporary trainer to use data loading methods
         temp_trainer = SensorEncoderTrainer(self.config, self.text_encoder)
         temp_trainer.sensor_encoder = self.sensor_encoder
         
-        # Load home_a all splits (completely unseen by sensor encoder)
+        # Load home_a inference split (completely unseen by sensor encoder)
         dataset = temp_trainer._prepare_training_data(
             interpretations_file, 
-            splits=['train', 'val', 'test'],
+            splits=['inference'],
             home_filter=['home_a']
         )
         
