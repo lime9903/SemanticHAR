@@ -18,7 +18,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import SemanticHARConfig
-from dataloader.data_loader import load_sensor_data
 
 
 class SemanticGenerator:
@@ -37,10 +36,11 @@ class SemanticGenerator:
         from config import OPENAI_API_KEY
         print(f"   OpenAI API: {'✓' if OPENAI_API_KEY else '✗'}")
     
-    def generate_sensor_interpretation(self, window_data: pd.DataFrame, activity: str) -> str:
+
+    def generate_sensor_interpretation(self, window_data: Dict) -> str:
         """Generate semantic interpretations for sensor data"""
         
-        system_prompt, user_prompt = self._create_sensor_prompt(window_data, activity)
+        system_prompt, user_prompt = self._create_sensor_prompt(window_data)
         try:
             client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             response = client.chat.completions.create(
@@ -60,6 +60,7 @@ class SemanticGenerator:
             print(f"LLM call error: {e}")
             return None
     
+
     def generate_activity_interpretation(self, activity: str) -> str:
         """Generate semantic interpretations for activity labels"""
         
@@ -84,65 +85,59 @@ class SemanticGenerator:
             print(f"LLM call error: {e}")
             return None
 
-    def generate_interpretations(self, 
-                               source_dataset: str = "UCI_ADL_home_b",
-                               target_dataset: str = "UCI_ADL_home_a",
-                               window_size_seconds: int = 60,
-                               overlap_ratio: float = 0.8,
-                               splits: List[str] = ['train', 'val', 'test'],
-                               output_file: Optional[str] = None) -> str:
+
+    def generate_interpretations(self, config: SemanticHARConfig) -> str:
         """
         Generate semantic interpretations
         
         Args:
-            source_dataset: source dataset name
-            target_dataset: target dataset name
-            window_size_seconds: time window size
-            overlap_ratio: window overlap ratio 
+            config: configuration object
             splits: data splits to process (train, val, test)
-            output_file: output file path
             
         Returns:
             path to the generated interpretations file
         """
         
-        # Load time windows data
-        time_windows_file = self.config.time_windows_file
-        if not os.path.exists(time_windows_file):
-            print(f"✗ Time windows file not found: {time_windows_file}")
-            print(f"  Please run 'python main.py --mode train' first to generate the time windows")
+        # Load windows data
+        windows_file = config.windows_file
+        if not os.path.exists(windows_file):
+            print(f"✗ Windows file not found: {windows_file}")
+            print(f"  Please run 'python main.py --mode train' first to generate the windows")
             return None
             
-        with open(time_windows_file, 'r', encoding='utf-8') as f:
-            time_windows_data = json.load(f)
+        with open(windows_file, 'r', encoding='utf-8') as f:
+            windows_data = json.load(f)
         
         # Initialize result structure
         results = {
             'generation_info': {
                 'timestamp': datetime.now().isoformat(),
-                'source_dataset': source_dataset,
-                'target_dataset': target_dataset,
-                'window_size_seconds': window_size_seconds,
-                'overlap_ratio': overlap_ratio,
-                'splits_processed': splits,
+                'source_dataset': config.source_dataset,
+                'target_dataset': config.target_dataset
             },
-            'sensor_interpretations': {},
+            'sensor_interpretations': {
+                'train': {},
+                'val': {},
+                'test': {}
+            },
             'activity_interpretations': {},
             'statistics': {}
         }
         
+        if not config.use_event_based:
+            results['generation_info'].update({
+                'window_size_seconds': config.window_size_seconds,
+                'overlap_ratio': config.overlap_ratio
+            })
+        
         # Process each split
         total_windows_processed = 0
         total_interpretations_generated = 0
-        
-        for split in splits:
+
+        for split in windows_data['windows']:
             print(f"\n⨠ Processing {split} split...")
             
-            if split not in time_windows_data['time_windows']:
-                print(f"    ✗  No {split} data available")
-                continue
-            
-            windows = time_windows_data['time_windows'][split]
+            windows = windows_data['windows'][split]
             if len(windows) == 0:
                 print(f"    ✗  No {split} windows available")
                 continue
@@ -155,23 +150,14 @@ class SemanticGenerator:
             # Process each window
             for i, window_data in enumerate(tqdm(windows, desc=f"    {split}")):
                 try:
-                    # Extract activity and dataset info
-                    activity = window_data['activity']
-                    
-                    # Convert JSON to DataFrame for processing
-                    df = self._json_to_dataframe(window_data)
-
                     # Generate sensor interpretation
-                    interpretation = self.generate_sensor_interpretation(
-                        df, activity
-                    )
+                    interpretation = self.generate_sensor_interpretation(window_data)
                     
                     # Save result
                     window_id = f"window_{i+1}"
                     split_results[window_id] = {
                         'interpretation': interpretation,
-                        'activity': activity,
-                        'split': split
+                        'activity': window_data['activity']
                     }
                     
                     successful_interpretations += 1
@@ -181,8 +167,7 @@ class SemanticGenerator:
                     print(f"    ✗ Error processing window {i+1}: {e}")
                     split_results[f"window_{i+1}"] = {
                         'error': str(e),
-                        'activity': activity if 'activity' in locals() else 'Unknown',
-                        'split': split
+                        'activity': activity if 'activity' in locals() else 'Unknown'
                     }
             
             results['sensor_interpretations'][split] = split_results
@@ -193,11 +178,10 @@ class SemanticGenerator:
         # Generate activity interpretations
         print(f"\n⨠ Generating activity interpretations...")
         unique_activities = set()
-        for home_id in results['sensor_interpretations']:
-            for split in results['sensor_interpretations'][home_id]:
-                for window_id, window_data in results['sensor_interpretations'][home_id][split].items():
-                    if 'activity' in window_data:
-                        unique_activities.add(window_data['activity'])
+        for split in results['sensor_interpretations']:
+            for window_id, window_data in results['sensor_interpretations'][split].items():
+                if 'activity' in window_data:
+                    unique_activities.add(window_data['activity'])
         
         unique_activities = list(unique_activities)
         print(f"⨠ Processing {len(unique_activities)} unique activities")
@@ -223,42 +207,31 @@ class SemanticGenerator:
         results['statistics'] = {
             'total_windows_processed': total_windows_processed,
             'total_interpretations_generated': total_interpretations_generated,
-            'successful_sensor_interpretations': sum(
-                len([w for w in windows.values() if 'interpretation' in w and 'error' not in w])
-                for home_data in results['sensor_interpretations'].values()
-                for windows in home_data.values()
-            ),
-            'successful_activity_interpretations': len([
-                a for a in activity_interpretations.values() 
-                if 'interpretation' in a and 'error' not in a
-            ]),
+            'successful_sensor_interpretations': sum(len(window_data) for split in results['sensor_interpretations'] for window_data in results['sensor_interpretations'][split].values()),
+            'successful_activity_interpretations': len(activity_interpretations),
             'unique_activities': len(unique_activities),
-            'homes_processed': len(results['sensor_interpretations']),
-            'splits_processed': splits
         }
         
         # Save results
-        if output_file is None:
-            output_file = f"outputs/semantic_interpretations.json"
+        os.makedirs(os.path.dirname(config.semantic_interpretations_file), exist_ok=True)
         
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        
-        with open(output_file, 'w', encoding='utf-8') as f:
+        with open(config.semantic_interpretations_file, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False, default=str)
         
         # Result summary
+        print("\n" + "-" * 64)
         print("GENERATION SUMMARY")
-        print("-" * 64)
-        print(f"  Total windows processed: {total_windows_processed}")
-        print(f"  Total interpretations generated: {total_interpretations_generated}")
-        print(f"  Successful sensor interpretations: {results['statistics']['successful_sensor_interpretations']}")
-        print(f"  Successful activity interpretations: {results['statistics']['successful_activity_interpretations']}")
-        print(f"  Unique activities: {results['statistics']['unique_activities']}")
-        print(f"  Output file: {output_file}")
+        print(f"  - Total windows processed: {total_windows_processed}")
+        print(f"  - Total interpretations generated: {total_interpretations_generated}")
+        print(f"  - Successful sensor interpretations: {results['statistics']['successful_sensor_interpretations']}")
+        print(f"  - Successful activity interpretations: {results['statistics']['successful_activity_interpretations']}")
+        print(f"  - Unique activities: {results['statistics']['unique_activities']}")
+        print(f"  - Output file: {config.semantic_interpretations_file}")
         print("-" * 64 + "\n")
         
-        return output_file
+        return config.semantic_interpretations_file
     
+
     def load_interpretations(self, interpretations_file: str) -> Dict:
         """Load existing interpretations file"""
         print(f"⨠ Loading interpretations from: {interpretations_file}")
@@ -267,51 +240,17 @@ class SemanticGenerator:
             data = json.load(f)
         
         print(f"✓ Interpretations loaded successfully")
-        print(f"   - Homes: {len(data.get('sensor_interpretations', {}))}")
+        print(f"   - Splits: {len(data.get('sensor_interpretations', {}))}")
         print(f"   - Activities: {len(data.get('activity_interpretations', {}))}")
         
         return data
+
     
-    def get_interpretations_summary(self, interpretations_file: str) -> Dict:
-        """Interpretations file summary information"""
-        data = self.load_interpretations(interpretations_file)
-        
-        summary = {
-            'file_path': interpretations_file,
-            'generation_info': data.get('generation_info', {}),
-            'statistics': data.get('statistics', {}),
-            'homes': {},
-            'activities': {}
-        }
-        
-        # Split-wise statistics
-        for home_id, home_data in data.get('sensor_interpretations', {}).items():
-            home_stats = {}
-            for split, windows in home_data.items():
-                successful = len([w for w in windows.values() if 'interpretation' in w and 'error' not in w])
-                total = len(windows)
-                home_stats[split] = {
-                    'total': total,
-                    'successful': successful,
-                    'success_rate': successful / total if total > 0 else 0
-                }
-            summary['homes'][home_id] = home_stats
-        
-        # Activity-wise statistics
-        for activity, activity_data in data.get('activity_interpretations', {}).items():
-            summary['activities'][activity] = {
-                'has_interpretation': 'interpretation' in activity_data and 'error' not in activity_data,
-                'has_error': 'error' in activity_data
-            }
-        
-        return summary
-    
-    def _create_sensor_prompt(self, sensor_data: pd.DataFrame, activity: str) -> Tuple[str, str]:
-        """Create comprehensive prompt, split into system and user prompts"""
-        
-        # Calculate statistics for analysis
-        stats = self._calculate_comprehensive_statistics(sensor_data)
-        
+    def _create_sensor_prompt(self, window_data: Dict) -> Tuple[str, str]:
+        """Create prompt for ambient sensor data interpretation"""
+        # Remove 'window_id' key in dictionary
+        window_data.pop('window_id', None)
+
         # System prompt: General instructions and knowledge
         system_prompt = f"""You are an expert in analyzing ambient sensor data for human activity recognition. You specialize in interpreting sensor patterns from smart home environments.
 
@@ -329,7 +268,7 @@ class SemanticGenerator:
 - Electric Sensors: Detect appliance usage and power consumption, showing device interaction patterns
 
 **Activity-Specific Knowledge**:
-{self._get_activity_knowledge(activity)}
+{self._get_activity_knowledge(window_data['activity'])}
 
 **Analysis Framework**:
 You will analyze sensor data using amplitude analysis, frequency analysis, time series analysis, and statistical measures. You will categorize patterns into 6 categories: Sensor Activity Level, Temporal Pattern, Location Distribution, Sensor Type Pattern, Activity Intensity, and Duration Pattern."""
@@ -337,30 +276,9 @@ You will analyze sensor data using amplitude analysis, frequency analysis, time 
         # User prompt: semantic interpretation focus
         user_prompt = f"""## Data Introduction
 
-This is a {stats['window_duration']} seconds time window of ambient sensor data from a smart home environment. The first column is the timestamp, the second column is the sensor location, the third column is the sensor type, the fourth column is the sensor place, the fifth column is the sensor value. The ambient sensor reading may be in one of the following states: [Sleeping, Toileting, Showering, Breakfast, Lunch, Dinner, Grooming, Spare_Time/TV, Leaving, Snack].
-
-## Sensor Data Analysis
-
-### Temporal Characteristics
-- **Event Density**: {stats['event_density']:.3f} events per second
-- **Activity Duration**: {stats['total_activity_time']:.2f} seconds of total sensor activity
-- **Average Event Duration**: {stats['mean_duration']:.2f} seconds
-- **Event Duration Range**: {stats['min_duration']:.2f} - {stats['max_duration']:.2f} seconds
-
-### Spatial Characteristics
-- **Sensor Types**: {stats['sensor_types']} different sensor types detected
-- **Locations**: {stats['locations']} different sensor locations
-- **Rooms**: {stats['places']} different rooms involved
-- **Activity Consistency**: {stats['activity_consistency']:.2f}
-
-### Statistical Measures
-- **Mean Event Duration**: {stats['mean_duration']:.2f} seconds
-- **Standard Deviation**: {stats['std_duration']:.2f} seconds
-- **Maximum Duration**: {stats['max_duration']:.2f} seconds
-- **Minimum Duration**: {stats['min_duration']:.2f} seconds
+This is a {window_data['window_duration']} seconds time window of ambient sensor data from a smart home environment. The first element is the start time of window, the second element is the end time of window, the third element is the duration of window, the fourth element is the activity, the fifth element is the sensor type, the sixth element is the sensor location, the seventh element is the sensor place. The ambient sensor reading may be in one of the following states: [Sleeping, Toileting, Showering, Breakfast, Lunch, Dinner, Grooming, Spare_Time/TV, Leaving, Snack].
 
 ## Task Introduction: Semantic Interpretation Generation
-
 Generate a comprehensive semantic interpretation of the sensor data that describes the human activity patterns. Focus on:
 
 1. **Activity Description**: What the person was likely doing during this time window
@@ -373,24 +291,23 @@ Generate a comprehensive semantic interpretation of the sensor data that describ
 **Output Format**:
 You MUST provide your analysis in the following exact format with these exact headers:
 
-**Activity Description**: [Describe what the person was likely doing during this time window]
+Activity Description: [Describe what the person was likely doing during this time window]
 
-**Sensor Pattern Analysis**: [Analyze how the sensor events relate to the activity]
+Sensor Pattern Analysis: [Analyze how the sensor events relate to the activity]
 
-**Behavioral Insights**: [What the sensor data reveals about user behavior]
+Behavioral Insights: [What the sensor data reveals about user behavior]
 
-**Temporal Characteristics**: [Timing patterns and activity duration analysis]
+Temporal Characteristics: [Timing patterns and activity duration analysis]
 
-**Spatial Context**: [Location-based activity patterns]
+Spatial Context: [Location-based activity patterns]
 
-**Confidence Assessment**: [Your confidence level in this interpretation (High/Medium/Low) with reasoning]
+Confidence Assessment: [Your confidence level in this interpretation (High/Medium/Low) with reasoning]
 
 **IMPORTANT FORMATTING REQUIREMENTS**:
 - Use EXACTLY the headers shown above (copy them exactly)
-- Each section must start with **Header Name**:
+- Each section must start with 'Header Name':
 - Provide 2-3 sentences for each section
 - Be specific and detailed in your analysis
-- Use the statistical data provided
 - Consider the activity context
 - Provide reasoning for your interpretations
 - Maintain scientific accuracy
@@ -410,10 +327,11 @@ You MUST provide your analysis in the following exact format with these exact he
 
 ## Sensor Data:
 
-{sensor_data.to_string()}"""
+{json.dumps(window_data, indent=2)}"""
      
         return system_prompt, user_prompt
     
+
     def _create_activity_prompt(self, activity: str) -> Tuple[str, str]:
         """create prompt for ambient sensor activity label interpretation"""
         
@@ -492,48 +410,7 @@ Each aspect should be described in detail and technically, focusing on how ambie
         
         return system_prompt, user_prompt
     
-    def _calculate_comprehensive_statistics(self, sensor_data: pd.DataFrame) -> Dict:
-        """Calculate comprehensive statistics for DataFrame sensor data"""
-        stats = {}
-        
-        # Basic counts
-        stats['total_events'] = len(sensor_data)
-        stats['sensor_types'] = sensor_data['sensor_type'].nunique() if 'sensor_type' in sensor_data.columns else 0
-        stats['locations'] = sensor_data['sensor_location'].nunique() if 'sensor_location' in sensor_data.columns else 0
-        stats['places'] = sensor_data['sensor_place'].nunique() if 'sensor_place' in sensor_data.columns else 0
-        
-        # Temporal analysis
-        stats['window_duration'] = sensor_data['window_duration'].iloc[0] if 'window_duration' in sensor_data.columns else 60
-        stats['event_density'] = stats['total_events'] / stats['window_duration']
-        
-        # Duration analysis
-        if 'sensor_duration' in sensor_data.columns:
-            stats['avg_duration'] = sensor_data['sensor_duration'].mean()
-            stats['total_activity_time'] = sensor_data['sensor_duration'].sum()
-            stats['mean_duration'] = sensor_data['sensor_duration'].mean()
-            stats['std_duration'] = sensor_data['sensor_duration'].std()
-            stats['max_duration'] = sensor_data['sensor_duration'].max()
-            stats['min_duration'] = sensor_data['sensor_duration'].min()
-        else:
-            stats['avg_duration'] = 0
-            stats['total_activity_time'] = 0
-            stats['mean_duration'] = 0
-            stats['std_duration'] = 0
-            stats['max_duration'] = 0
-            stats['min_duration'] = 0
-        
-        # Activity analysis
-        if 'activity' in sensor_data.columns:
-            stats['primary_activity'] = sensor_data['activity'].mode().iloc[0] if len(sensor_data) > 0 else 'Unknown'
-            stats['activity_consistency'] = sensor_data['activity'].value_counts().iloc[0] / len(sensor_data) if len(sensor_data) > 0 else 0
-            stats['activity_transitions'] = len(sensor_data['activity'].unique()) if len(sensor_data) > 0 else 0
-        else:
-            stats['primary_activity'] = 'Unknown'
-            stats['activity_consistency'] = 0
-            stats['activity_transitions'] = 0
-        
-        return stats
-    
+
     def _get_activity_knowledge(self, activity: str) -> str:
         """Get activity-specific knowledge for system prompt"""
         activity_knowledge = {
@@ -547,89 +424,3 @@ Each aspect should be described in detail and technically, focusing on how ambie
             'Dinner': "Dinner: dinner preparation may involve more complex cooking activities, multiple kitchen appliances, longer preparation times, and higher sensor activity across kitchen and dining areas."
         }
         return activity_knowledge.get(activity, f"General knowledge about {activity} activities in smart home environments.")
-    
-    def _json_to_dataframe(self, window_data: Dict) -> pd.DataFrame:
-        """Convert JSON window data to DataFrame format"""
-        
-        # Extract sensor information
-        sensor_types = window_data.get('sensor_types', [])
-        locations = window_data.get('locations', [])
-        places = window_data.get('places', [])
-        sensor_events = window_data.get('sensor_events', 0)
-        window_duration = int(window_data.get('window_duration', 60))  # Ensure integer
-        window_start = window_data.get('window_start', 'N/A')
-        window_end = window_data.get('window_end', 'N/A')
-        activity = window_data.get('activity', 'Unknown')
-        
-        # Create DataFrame with sensor events
-        data = []
-        for i in range(sensor_events):
-            # Create synthetic sensor event data
-            event_data = {
-                'sensor_type': sensor_types[i % len(sensor_types)] if sensor_types else 'Unknown',
-                'sensor_location': locations[i % len(locations)] if locations else 'Unknown',
-                'sensor_place': places[i % len(places)] if places else 'Unknown',
-                'timestamp': pd.to_datetime(window_start) + pd.Timedelta(seconds=i * (window_duration / sensor_events)) if sensor_events > 0 else pd.to_datetime(window_start),
-                'activity': activity,
-                'window_start': window_start,
-                'window_end': window_end,
-                'window_duration': window_duration
-            }
-            data.append(event_data)
-        
-        # If no sensor events, create a single row with metadata
-        if not data:
-            data = [{
-                'sensor_type': 'None',
-                'sensor_location': 'None', 
-                'sensor_place': 'None',
-                'timestamp': pd.to_datetime(window_start),
-                'activity': activity,
-                'window_start': window_start,
-                'window_end': window_end,
-                'window_duration': window_duration
-            }]
-        
-        return pd.DataFrame(data)
-    
-    def _create_sensor_prompt_from_json(self, window_data: Dict, activity: str) -> Tuple[str, str]:
-        """Create prompts from JSON window data"""
-        
-        # Extract sensor information from JSON
-        sensor_types = window_data.get('sensor_types', [])
-        locations = window_data.get('locations', [])
-        places = window_data.get('places', [])
-        sensor_events = window_data.get('sensor_events', 0)
-        window_duration = window_data.get('window_duration', 60)
-        window_start = window_data.get('window_start', 'N/A')
-        window_end = window_data.get('window_end', 'N/A')
-        
-        # Create sensor data description
-        sensor_description = f"""
-Sensor Events: {sensor_events} events
-Window Duration: {window_duration} seconds
-Time Period: {window_start} to {window_end}
-Sensor Types: {', '.join(sensor_types) if sensor_types else 'None detected'}
-Locations: {', '.join(locations) if locations else 'None detected'}
-Places: {', '.join(places) if places else 'None detected'}
-Activity: {activity}
-        """.strip()
-        
-        system_prompt = """You are an expert in ambient sensor data analysis for human activity recognition. 
-Your task is to generate natural language interpretations of sensor data that describe what a person was likely doing based on the sensor events.
-
-Focus on:
-1. The pattern of sensor activations
-2. The locations and types of sensors triggered
-3. The temporal sequence of events
-4. The context of the activity
-
-Generate a clear, descriptive interpretation that captures the essence of the human activity."""
-        
-        user_prompt = f"""Based on the following sensor data, generate a natural language interpretation of what the person was likely doing:
-
-{sensor_description}
-
-Please provide a clear, descriptive interpretation of the human activity based on this sensor data pattern."""
-        
-        return system_prompt, user_prompt

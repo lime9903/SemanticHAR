@@ -8,6 +8,8 @@ import pandas as pd
 from typing import Dict, List, Tuple, Optional
 import random
 from tqdm import tqdm
+import json
+from datetime import datetime
 
 sys.path.append('/workspace/semantic')
 from config import SemanticHARConfig
@@ -44,7 +46,7 @@ class SensorDataset:
         if self.source_dataset == "MARBLE":
             source_sensor_data, source_activity_label, source_activity_name = self._load_marble_data()
         elif self.source_dataset.startswith("UCI_ADL"):
-            source_sensor_data, source_activity_label, source_activity_name = self._load_uci_adl_data()
+            source_sensor_data, source_activity_label, source_activity_name = self._load_uci_adl_data(self.source_dataset)
         else:
             raise ValueError(f"✗ Unsupported dataset: {self.source_dataset}")
 
@@ -52,7 +54,7 @@ class SensorDataset:
         if self.target_dataset == "MARBLE":
             target_sensor_data, target_activity_label, target_activity_name = self._load_marble_data()
         elif self.target_dataset.startswith("UCI_ADL"):
-            target_sensor_data, target_activity_label, target_activity_name = self._load_uci_adl_data()
+            target_sensor_data, target_activity_label, target_activity_name = self._load_uci_adl_data(self.target_dataset)
         else:
             raise ValueError(f"✗ Unsupported dataset: {self.target_dataset}")
         
@@ -175,20 +177,19 @@ class SensorDataset:
         
         return np.array(sensor_features)
     
-    def _load_uci_adl_data(self) -> Tuple[List[pd.DataFrame], List[str], List[str]]:
+    def _load_uci_adl_data(self, dataset_name: str = "UCI_ADL_home_a") -> Tuple[List[pd.DataFrame], List[str], List[str]]:
         """UCI ADL Dataset loading"""
-        sensor_data = None
         activity_label = None
         activity_name = None
         data_path = self.config.uci_adl_data_path
 
-        # Determine which dataset to load based on source_dataset
-        if self.source_dataset == "UCI_ADL_home_a":
+        # Determine which dataset to load based on dataset_name
+        if dataset_name == "UCI_ADL_home_a":
             adl_file = 'OrdonezA_ADLs.txt'
-        elif self.source_dataset == "UCI_ADL_home_b":
+        elif dataset_name == "UCI_ADL_home_b":
             adl_file = 'OrdonezB_ADLs.txt'
         else:
-            raise ValueError(f"✗ Unsupported dataset: {self.source_dataset}")
+            raise ValueError(f"✗ Unsupported dataset: {dataset_name}")
 
         # Load ADL data
         try: 
@@ -238,7 +239,7 @@ class SensorDataset:
             if len(sensor_data_df) > 0:
                 activity_label = np.array(sensor_data_df['activity'])
                 activity_name = sensor_data_df['activity'].unique().tolist()
-                print(f"\nCreated UCI ADL dataset with {len(sensor_data_df)} sensor-activity pairs from {self.source_dataset}")
+                print(f"\nCreated UCI ADL dataset with {len(sensor_data_df)} sensor-activity pairs from {dataset_name}")
                 print(f"Sensor data: {sensor_data_df[:3]}")
                 print(f"Activity names: {activity_name}")
 
@@ -345,8 +346,8 @@ class SensorDataset:
     def get_data(self):
         return self.source_sensor_data, self.source_activity_label, self.source_activity_name, self.target_sensor_data, self.target_activity_label, self.target_activity_name
 
-def load_sensor_data(config: SemanticHARConfig) -> Dict[str, Dict[str, List[pd.DataFrame]]]:
-    """Load sensor data as DataFrames and split with time windows"""
+def load_sensor_data(config: SemanticHARConfig, use_event_based: bool = True) -> Dict[str, Dict[str, List[pd.DataFrame]]]:
+    """Load sensor data as DataFrames and split with event-based or time-based windows"""
 
     dataset_loader = SensorDataset(config)
     source_sensor_data, _, _, target_sensor_data, _, _ = dataset_loader.get_data()
@@ -359,17 +360,20 @@ def load_sensor_data(config: SemanticHARConfig) -> Dict[str, Dict[str, List[pd.D
     
     # Process source dataset (train + val)
     print(f"\nProcessing source dataset: {config.source_dataset}")
-    print(f"  Processing {len(source_sensor_data)} events with {config.window_size_seconds}s windows, {config.overlap_ratio*100}% overlap...")
     
-    # Create time windows for source data
-    source_windows = _create_time_windows(source_sensor_data, config.window_size_seconds, config.overlap_ratio)
-    print(f"  Created {len(source_windows)} source time windows")
+    if use_event_based:
+        print(f"  Processing {len(source_sensor_data)} events with event-based grouping...")
+        # Create event-based windows for source data
+        source_windows = _create_event_based_windows(source_sensor_data)
+        print(f"  Created {len(source_windows)} source event-based windows")
+    else:
+        print(f"  Processing {len(source_sensor_data)} events with {config.window_size_seconds}s windows, {config.overlap_ratio*100}% overlap...")
+        # Create time windows for source data
+        source_windows = _create_time_based_windows(source_sensor_data, config.window_size_seconds, config.overlap_ratio)
+        print(f"  Created {len(source_windows)} source time windows")
     
     # Split source data: 80% train, 20% val
-    train_windows, val_windows = _split_windows_custom(
-        source_windows, config.source_train_ratio, (1 - config.source_train_ratio)
-    )
-    
+    train_windows, val_windows = _split_windows(source_windows, config.source_train_ratio)
     split_data['train'][config.source_dataset] = train_windows
     split_data['val'][config.source_dataset] = val_windows
     
@@ -378,11 +382,17 @@ def load_sensor_data(config: SemanticHARConfig) -> Dict[str, Dict[str, List[pd.D
     
     # Process target dataset (test)
     print(f"\nProcessing target dataset: {config.target_dataset}")
-    print(f"  Processing {len(target_sensor_data)} events with {config.window_size_seconds}s windows, {config.overlap_ratio*100}% overlap...")
     
-    # Create time windows for target data
-    target_windows = _create_time_windows(target_sensor_data, config.window_size_seconds, config.overlap_ratio)
-    print(f"  Created {len(target_windows)} target time windows")
+    if use_event_based:
+        print(f"  Processing {len(target_sensor_data)} events with event-based grouping...")
+        # Create event-based windows for target data
+        target_windows = _create_event_based_windows(target_sensor_data)
+        print(f"  Created {len(target_windows)} target event-based windows")
+    else:
+        print(f"  Processing {len(target_sensor_data)} events with {config.window_size_seconds}s windows, {config.overlap_ratio*100}% overlap...")
+        # Create time windows for target data
+        target_windows = _create_time_based_windows(target_sensor_data, config.window_size_seconds, config.overlap_ratio)
+        print(f"  Created {len(target_windows)} target time windows")
     
     # Target data: all windows for test
     split_data['test'][config.target_dataset] = target_windows
@@ -398,13 +408,44 @@ def load_sensor_data(config: SemanticHARConfig) -> Dict[str, Dict[str, List[pd.D
         print(f"  {split_name:15} : {total:5} windows (source: {source_count:4}, target: {target_count:4})")
     print("-" * 64 + "\n")
 
-    # Save time windows to JSON
-    _save_time_windows(split_data, config)
+    # Save windows to JSON
+    _save_windows(split_data, config, use_event_based)
     
     return split_data
 
 
-def _create_time_windows(df: pd.DataFrame, window_size_seconds: int, overlap_ratio: float) -> List[pd.DataFrame]:
+def _create_event_based_windows(df: pd.DataFrame) -> List[pd.DataFrame]:
+    """Create event-based windows"""
+    
+    # Sort by timestamp
+    df_sorted = df.sort_values('timestamp').reset_index(drop=True)
+    
+    if len(df_sorted) == 0:
+        return []
+    
+    print(f"    Creating event-based windows")
+    print(f"    Total events: {len(df_sorted)}")
+    
+    windows = []
+    
+    for idx, row in df_sorted.iterrows():
+        window_df = pd.DataFrame([row]).copy()
+
+        window_df['window_start'] = row['timestamp']
+        window_df['window_end'] = row['timestamp'] + pd.Timedelta(seconds=row['sensor_duration'])
+        window_df['window_duration'] = row['sensor_duration']
+        
+        windows.append(window_df)
+    
+    print(f"    Created {len(windows)} event-based windows")
+    for i, window in enumerate(windows[:5]):  # Show first 5 windows as examples
+        print(f"      Window {i+1}: {window['window_duration'].iloc[0]:.1f}s, "
+              f"activity: {window['activity'].iloc[0]}")
+    
+    return windows
+
+
+def _create_time_based_windows(df: pd.DataFrame, window_size_seconds: int, overlap_ratio: float) -> List[pd.DataFrame]:
     """Create time windows based on sensor events duration"""
     window_size_seconds = int(window_size_seconds)
     overlap_ratio = float(overlap_ratio)
@@ -475,20 +516,27 @@ def _create_time_windows(df: pd.DataFrame, window_size_seconds: int, overlap_rat
     return windows
 
 
-def _save_time_windows(split_data: Dict, config) -> str:
-    """Save time windows to JSON file"""
-    import json
-    from datetime import datetime
+def _save_windows(split_data: Dict, config, use_event_based: bool = True) -> str:
+    """Save windows to JSON file"""
     
-    time_windows_data = {
-        'generation_info': {
-            'timestamp': datetime.now().isoformat(),
-            'source_dataset': config.source_dataset,
-            'target_dataset': config.target_dataset,
-            'window_size_seconds': config.window_size_seconds,
-            'overlap_ratio': config.overlap_ratio,
-        },
-        'time_windows': {
+    # Base generation info
+    generation_info = {
+        'timestamp': datetime.now().isoformat(),
+        'source_dataset': config.source_dataset,
+        'target_dataset': config.target_dataset,
+    }
+    
+    # Add generation information for each generation strategy
+    if not use_event_based:
+        generation_info['window_size_seconds'] = config.window_size_seconds
+        generation_info['overlap_ratio'] = config.overlap_ratio
+        generation_info['generation_strategy'] = 'time-based'
+    else:
+        generation_info['generation_strategy'] = 'event-based'
+    
+    windows_data = {
+        'generation_info': generation_info,
+        'windows': {
             'train': [],
             'val': [],
             'test': []
@@ -500,52 +548,48 @@ def _save_time_windows(split_data: Dict, config) -> str:
             for dataset in [config.source_dataset, config.target_dataset]:
                 windows = split_data[split_name].get(dataset, [])
                 for i, window in enumerate(windows):
-                    activity = window['activity'].iloc[0] if 'activity' in window.columns else 'Unknown'
-                    window_duration = window['window_duration'].iloc[0] if 'window_duration' in window.columns else 60
                     window_start = str(window['window_start'].iloc[0]) if 'window_start' in window.columns else 'N/A'
                     window_end = str(window['window_end'].iloc[0]) if 'window_end' in window.columns else 'N/A'
+                    window_duration = window['window_duration'].iloc[0] if 'window_duration' in window.columns else 'N/A'
+                    activity = window['activity'].iloc[0] if 'activity' in window.columns else 'Unknown'
                     sensor_types = window['sensor_type'].unique().tolist() if 'sensor_type' in window.columns else []
                     locations = window['sensor_location'].unique().tolist() if 'sensor_location' in window.columns else []
                     places = window['sensor_place'].unique().tolist() if 'sensor_place' in window.columns else []
                     
                     window_info = {
                         'window_id': f'{dataset}_{split_name}_{i+1}',
-                        'window_duration': window_duration,
                         'window_start': window_start,
                         'window_end': window_end,
+                        'window_duration': window_duration,
                         'activity': activity,
                         'sensor_types': sensor_types,
                         'locations': locations,
                         'places': places
                     }
-                    time_windows_data['time_windows'][split_name].append(window_info)
+                    windows_data['windows'][split_name].append(window_info)
     
-    with open(config.time_windows_file, 'w', encoding='utf-8') as f:
-        json.dump(time_windows_data, f, ensure_ascii=False, indent=2, default=str)
+    with open(config.windows_file, 'w', encoding='utf-8') as f:
+        json.dump(windows_data, f, ensure_ascii=False, indent=2, default=str)
     
-    print(f"✓ Time windows saved to: {config.time_windows_file}")
-    return config.time_windows_file
+    print(f"✓ Windows saved to: {config.windows_file}")
+    return config.windows_file
 
 
-def _split_windows_custom(windows: List[pd.DataFrame], train_ratio: float, val_ratio: float) -> Tuple[List[pd.DataFrame], List[pd.DataFrame]]:
-    """Custom split for source home using percentages
+def _split_windows(windows: List[pd.DataFrame], train_ratio: float) -> Tuple[List[pd.DataFrame], List[pd.DataFrame]]:
+    """Split windows using percentages
     
     Returns:
         train: train_ratio
-        val: val_ratio
     """
     total_windows = len(windows)
-    
-    # Calculate split sizes from percentages
     train_count = int(total_windows * train_ratio)
     
     # Shuffle windows
     random.seed(42)
-    shuffled_windows = windows.copy()
-    random.shuffle(shuffled_windows)
+    random.shuffle(windows)
     
     # Split into train and val
-    train = shuffled_windows[:train_count]
-    val = shuffled_windows[train_count:]
+    train = windows[:train_count]
+    val = windows[train_count:]
     
     return train, val

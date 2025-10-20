@@ -241,16 +241,16 @@ class TextEncoderTrainer:
         self.config = config
         self.device = torch.device(config.device)
         
-        print(f"⨠ TextEncoderTrainer using device: {self.device}")
+        print(f"TextEncoderTrainer using device: {self.device}")
         if self.device.type == 'cuda':
-            print(f"   GPU: {torch.cuda.get_device_name(0)}")
-            print(f"   Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+            print(f"  - GPU: {torch.cuda.get_device_name(0)}")
+            print(f"  - Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
         
         self.text_encoder = TextEncoder(config).to(self.device)
         self.text_decoder = TextDecoder(config).to(self.device)
         self.contrastive_module = ContrastiveLearningModule(config).to(self.device)
         
-        print(f"⨠ Models moved to {self.device}")
+        print(f"✓ Models moved to {self.device}")
         
         self.optimizer = torch.optim.AdamW(
             list(self.text_encoder.parameters()) + 
@@ -262,7 +262,7 @@ class TextEncoderTrainer:
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='min', factor=0.5, patience=3, verbose=True
         )
-        
+   
     def train_step(self, sensor_interpretations: List[str], 
                    activity_interpretations: List[str],
                    sensor_categories: torch.Tensor,
@@ -459,22 +459,22 @@ class TextEncoderTrainer:
               batch_size: int = 8, early_stopping: bool = False, patience: int = 10) -> 'TextEncoder':
         """Train text encoder with semantic interpretations"""
         
-        print("\n ⨠ Using home_b text_train and text_val splits")
+        print(f"\nUsing {self.config.source_dataset} train and val splits\n")
 
-        train_dataset = prepare_training_data(interpretations_file, splits=['text_train'], home_filter=['home_b'])
-        val_dataset = prepare_training_data(interpretations_file, splits=['text_val'], home_filter=['home_b'])
+        train_dataset = prepare_training_data(interpretations_file, splits=['train'])
+        val_dataset = prepare_training_data(interpretations_file, splits=['val'])
         
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
         
-        print(f"\nTrain dataset size: {len(train_dataset)}")
-        print(f"Validation dataset size: {len(val_dataset)}")
-        print(f"Batch size: {batch_size}")
-        print(f"Number of epochs: {num_epochs}")
-        print(f"Early stopping: {early_stopping}")
+        print(f"  - Train dataset size: {len(train_dataset)}")
+        print(f"  - Validation dataset size: {len(val_dataset)}")
+        print(f"  - Batch size: {batch_size}")
+        print(f"  - Number of epochs: {num_epochs}")
+        print(f"  - Early stopping: {early_stopping}")
         if early_stopping:
-            print(f"Patience: {patience} epochs")
-            print(f"Validation batches: {len(val_dataloader)}")
+            print(f"  - Patience: {patience} epochs")
+            print(f"  - Validation batches: {len(val_dataloader)}")
         
         print(f"\nTraining Text Encoder...")
         print("-" * 40)
@@ -585,7 +585,7 @@ class TextEncoderTrainer:
         print("\nText Encoder Training Completed!")
         
         # Save final model
-        checkpoint_dir = "checkpoints"
+        checkpoint_dir = self.config.model_dir
         os.makedirs(checkpoint_dir, exist_ok=True)
         
         if early_stopping:
@@ -690,16 +690,14 @@ def load_interpretations_from_json(json_file: str) -> Tuple[List[Dict], Dict[str
     
     # Load all sensor data with split information
     for split in data['sensor_interpretations']:
-        for home_id in data['sensor_interpretations'][split]:
-            for window_id, window_data in data['sensor_interpretations'][split][home_id].items():
-                if 'interpretation' in window_data and 'error' not in window_data:
-                    all_sensor_data.append({
-                        'interpretation': window_data['interpretation'],
-                        'activity': window_data['activity'],
-                        'split': split,
-                        'home_id': home_id,
-                        'window_id': window_id
-                    })
+        for window_id, window_data in data['sensor_interpretations'][split].items():
+            if isinstance(window_data, dict) and 'interpretation' in window_data and 'error' not in window_data:
+                all_sensor_data.append({
+                    'interpretation': window_data['interpretation'],
+                    'activity': window_data['activity'],
+                    'split': split,
+                    'window_id': window_id
+                })
     
     # Activity interpretations load as dictionary
     for activity, activity_data in data['activity_interpretations'].items():
@@ -715,31 +713,23 @@ def load_interpretations_from_json(json_file: str) -> Tuple[List[Dict], Dict[str
     return all_sensor_data, activity_interpretations
 
 
-def prepare_training_data(interpretations_file: str, splits: List[str] = ['text_train'], 
-                         home_filter: Optional[List[str]] = None) -> InterpretationDataset:
+def prepare_training_data(interpretations_file: str, splits: List[str] = ['train']) -> InterpretationDataset:
     """Prepare training data for specific splits (train/val/test)
     
     Args:
         interpretations_file: Path to JSON file
-        splits: List of splits to include (e.g., ['text_train'], ['text_val'], ['sensor_train', 'sensor_val'])
-        home_filter: List of home IDs to include (e.g., ['home_a'], ['home_b'])
+        splits: List of splits to include (e.g., ['train'], ['val'])
     """
     print(f"Loading interpretations from: {interpretations_file} for splits: {splits}")
-    if home_filter:
-        print(f"  Filtering for homes: {home_filter}")
     
     # Load all data and filter by splits
     all_sensor_data, activity_interpretations = load_interpretations_from_json(interpretations_file)
     
-    # Filter data by splits and homes
+    # Filter data by splits
     split_data = [item for item in all_sensor_data if item['split'] in splits]
     
-    # Apply home filter if specified
-    if home_filter:
-        split_data = [item for item in split_data if item['home_id'] in home_filter]
-    
     if not split_data:
-        raise ValueError(f"No valid data found for splits {splits} and homes {home_filter} in the JSON file")
+        raise ValueError(f"✗ No valid data found for splits {splits} in the JSON file")
     
     # Extract data for the dataset
     sensor_interpretations = [item['interpretation'] for item in split_data]
@@ -965,60 +955,122 @@ class TextEncoderEvaluator:
         self.text_decoder.train()
         return generated_tokens
     
-    def visualize_embeddings(self, sensor_interpretations: List[str], 
-                           activity_interpretations: List[str],
-                           activities: List[str],
-                           save_path: str = "outputs/embedding_visualization.png"):
-        """Embedding visualization"""
-        
-        # Data length matching
-        min_length = min(len(sensor_interpretations), len(activity_interpretations))
-        sensor_interpretations = sensor_interpretations[:min_length]
-        activity_interpretations = activity_interpretations[:min_length]
-        activities = activities[:min_length]
+    def visualize_embeddings(self, sensor_interpretations: List[str],
+                            activity_interpretations: List[str],
+                            activities: List[str],
+                            save_path: str = "outputs/embedding_visualization.png"):
+        """3D Embedding visualization with activity-based coloring"""
         
         with torch.no_grad():
-            # Embedding generation
             sensor_embeddings = self.text_encoder(sensor_interpretations)
             activity_embeddings = self.text_encoder(activity_interpretations)
         
-        # t-SNE dimension reduction
         all_embeddings = torch.cat([sensor_embeddings, activity_embeddings], dim=0)
         all_embeddings_np = all_embeddings.detach().cpu().numpy()
         
-        tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, len(all_embeddings_np)-1))
-        embeddings_2d = tsne.fit_transform(all_embeddings_np)
+        tsne = TSNE(n_components=3, random_state=42, perplexity=min(30, len(all_embeddings_np)-1))
+        embeddings_3d = tsne.fit_transform(all_embeddings_np)
         
-        # Visualization
-        plt.figure(figsize=(15, 10))
+        unique_activities = list(set(activities))
+        colors = plt.cm.Set3(np.linspace(0, 1, len(unique_activities)))
+        activity_to_color = dict(zip(unique_activities, colors))
         
-        # Sensor embeddings
-        sensor_2d = embeddings_2d[:len(sensor_interpretations)]
-        scatter1 = plt.scatter(sensor_2d[:, 0], sensor_2d[:, 1], 
-                              c='blue', alpha=0.6, s=50, label='Sensor Interpretations')
+        fig = plt.figure(figsize=(20, 15))
+        ax1 = fig.add_subplot(221, projection='3d')
         
-        # Activity embeddings
-        activity_2d = embeddings_2d[len(sensor_interpretations):]
-        scatter2 = plt.scatter(activity_2d[:, 0], activity_2d[:, 1], 
-                              c='red', alpha=0.6, s=50, label='Activity Interpretations')
+        # Sensor embeddings with activity-based coloring
+        sensor_3d = embeddings_3d[:len(sensor_interpretations)]
+        for i, activity in enumerate(activities):
+            color = activity_to_color[activity]
+            ax1.scatter(sensor_3d[i, 0], sensor_3d[i, 1], sensor_3d[i, 2], 
+                       c=[color], alpha=0.7, s=60, label=activity if i == activities.index(activity) else "")
         
-        for i in range(len(sensor_interpretations)):
-            plt.plot([sensor_2d[i, 0], activity_2d[i, 0]], 
-                    [sensor_2d[i, 1], activity_2d[i, 1]], 
-                    'k--', alpha=0.3, linewidth=0.5)
+        # Activity embeddings (centers)
+        activity_3d = embeddings_3d[len(sensor_interpretations):]
+        for i, activity in enumerate(unique_activities):
+            color = activity_to_color[activity]
+            ax1.scatter(activity_3d[i, 0], activity_3d[i, 1], activity_3d[i, 2], 
+                       c=[color], alpha=0.9, s=100, marker='^', edgecolors='black', linewidth=1)
         
-        plt.title('Text Encoder Embeddings Visualization')
-        plt.xlabel('t-SNE Dimension 1')
-        plt.ylabel('t-SNE Dimension 2')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
+        ax1.set_title('3D Text Encoder Embeddings\n(Sensor: circles, Activity: triangles)')
+        ax1.set_xlabel('t-SNE Dimension 1')
+        ax1.set_ylabel('t-SNE Dimension 2')
+        ax1.set_zlabel('t-SNE Dimension 3')
         
-        # Save
+        # XY plane
+        ax2 = fig.add_subplot(222)
+        for i, activity in enumerate(activities):
+            color = activity_to_color[activity]
+            ax2.scatter(sensor_3d[i, 0], sensor_3d[i, 1], 
+                       c=[color], alpha=0.7, s=60, label=activity if i == activities.index(activity) else "")
+        
+        for i, activity in enumerate(unique_activities):
+            color = activity_to_color[activity]
+            ax2.scatter(activity_3d[i, 0], activity_3d[i, 1], 
+                       c=[color], alpha=0.9, s=100, marker='^', edgecolors='black', linewidth=1)
+        
+        ax2.set_title('XY Plane Projection')
+        ax2.set_xlabel('t-SNE Dimension 1')
+        ax2.set_ylabel('t-SNE Dimension 2')
+        ax2.grid(True, alpha=0.3)
+        
+        # XZ plane
+        ax3 = fig.add_subplot(223)
+        for i, activity in enumerate(activities):
+            color = activity_to_color[activity]
+            ax3.scatter(sensor_3d[i, 0], sensor_3d[i, 2], 
+                       c=[color], alpha=0.7, s=60, label=activity if i == activities.index(activity) else "")
+        
+        for i, activity in enumerate(unique_activities):
+            color = activity_to_color[activity]
+            ax3.scatter(activity_3d[i, 0], activity_3d[i, 2], 
+                       c=[color], alpha=0.9, s=100, marker='^', edgecolors='black', linewidth=1)
+        
+        ax3.set_title('XZ Plane Projection')
+        ax3.set_xlabel('t-SNE Dimension 1')
+        ax3.set_ylabel('t-SNE Dimension 3')
+        ax3.grid(True, alpha=0.3)
+        
+        # YZ plane
+        ax4 = fig.add_subplot(224)
+        for i, activity in enumerate(activities):
+            color = activity_to_color[activity]
+            ax4.scatter(sensor_3d[i, 1], sensor_3d[i, 2], 
+                       c=[color], alpha=0.7, s=60, label=activity if i == activities.index(activity) else "")
+        
+        for i, activity in enumerate(unique_activities):
+            color = activity_to_color[activity]
+            ax4.scatter(activity_3d[i, 1], activity_3d[i, 2], 
+                       c=[color], alpha=0.9, s=100, marker='^', edgecolors='black', linewidth=1)
+        
+        ax4.set_title('YZ Plane Projection')
+        ax4.set_xlabel('t-SNE Dimension 2')
+        ax4.set_ylabel('t-SNE Dimension 3')
+        ax4.grid(True, alpha=0.3)
+        
+        handles = []
+        labels = []
+        for activity in unique_activities:
+            color = activity_to_color[activity]
+            handles.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color, markersize=8))
+            labels.append(activity)
+        
+        handles.extend([
+            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8, label='Sensor Interpretations'),
+            plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='gray', markersize=8, label='Activity Interpretations')
+        ])
+        labels.extend(['Sensor Interpretations', 'Activity Interpretations'])
+        
+        fig.legend(handles, labels, loc='center', bbox_to_anchor=(0.5, 0.02), ncol=min(6, len(unique_activities)+2))
+        
+        plt.tight_layout()
+        
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"  ✓ Embedding visualization saved: {save_path}")
+        print(f"  ✓ 3D Embedding visualization saved: {save_path}")
+        print(f"  ✓ Activities visualized: {len(unique_activities)} unique activities")
     
     def evaluate_similarity_matrix(self, sensor_interpretations: List[str], 
                                  activity_interpretations: List[str],
@@ -1320,47 +1372,40 @@ class TextEncoderEvaluator:
             
             print(f"  ✓ Activity similarity heatmap saved: {save_path}")
     
-    def comprehensive_evaluation(self, interpretations_file: str, 
-                              output_dir: str = "outputs") -> Dict:
+    def comprehensive_evaluation(self, interpretations_file: str, output_dir: str = "outputs") -> Dict:
         """Comprehensive evaluation"""
 
         # Data loading
         with open(interpretations_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        
-        # Sensor interpretations extraction (use home_b text_train for evaluation)
+
         sensor_interpretations = []
-        activity_interpretations = []
+        activity_interpretation = {}
         activities = []
         
-        print("  Using home_b text_train for text encoder evaluation")
+        print(f"✓ Using {self.config.source_dataset} val split for evaluation")
+
+        if data['sensor_interpretations']['val']:
+            for _, window_data in data['sensor_interpretations']['val'].items():
+                if 'interpretation' in window_data:
+                    sensor_interpretations.append(window_data['interpretation'])
+                    activities.append(window_data['activity'])
         
-        # New split-first structure: data['sensor_interpretations'][split][home_id]
-        if 'text_train' in data['sensor_interpretations']:
-            if 'home_b' in data['sensor_interpretations']['text_train']:
-                for window_id, window_data in data['sensor_interpretations']['text_train']['home_b'].items():
-                    if 'interpretation' in window_data:
-                        sensor_interpretations.append(window_data['interpretation'])
-                        activities.append(window_data['activity'])
-        
-        print(f"  Using {len(sensor_interpretations)} samples for evaluation (home_b text_train)")
+        print(f"  Using {len(sensor_interpretations)} samples for evaluation")
         
         # Activity interpretations extraction and proper matching
-        activity_interpretation_dict = {}
         for activity, interpretation_data in data.get('activity_interpretations', {}).items():
             if 'interpretation' in interpretation_data:
-                activity_interpretation_dict[activity] = interpretation_data['interpretation']
+                activity_interpretation[activity] = interpretation_data['interpretation']
         
         # Match sensor interpretations with their corresponding activity interpretations
         matched_activity_interpretations = []
         for activity in activities:
-            if activity in activity_interpretation_dict:
-                matched_activity_interpretations.append(activity_interpretation_dict[activity])
+            if activity in activity_interpretation:
+                matched_activity_interpretations.append(activity_interpretation[activity])
             else:
-                # Fallback for unmatched activities
-                matched_activity_interpretations.append(f"Activity: {activity}")
+                raise ValueError("✗ No matched sensor-activity interpretation pair")
         
-        # Data limit (for evaluation)
         max_samples = min(50, len(sensor_interpretations))
         sensor_interpretations = sensor_interpretations[:max_samples]
         activities = activities[:max_samples]

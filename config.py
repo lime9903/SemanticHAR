@@ -19,21 +19,16 @@ class SemanticHARConfig:
     # Data Path
     marble_data_path: str = os.path.join(data_dir, "MARBLE")
     uci_adl_data_path: str = os.path.join(data_dir, "UCI ADL Binary Dataset")
-    time_windows_file: str = os.path.join(output_dir, "time_windows.json")
+    windows_file: str = os.path.join(output_dir, "windows.json")
     semantic_interpretations_file: str = os.path.join(output_dir, "semantic_interpretations.json")
 
     # Data
     window_size_seconds: int = 60
     overlap_ratio: float = 0.8
+    use_event_based: bool = True
     source_dataset: str = "UCI_ADL_home_b"  # TODO: choices (UCI_ADL_home_a, UCI_ADL_home_b, MARBLE)
     target_dataset: str = "UCI_ADL_home_a"
     source_train_ratio: float = 0.8  # 80% for train, 20% for val
-
-    # General Training Parameters
-    temperature: float = 0.07
-    early_stopping: bool = True
-    patience: int = 15
-    gradient_clip_norm: float = 0.5  # Gradient clipping for stability
     
     # LLM
     llm_model: str = "gpt-3.5-turbo"
@@ -45,6 +40,12 @@ class SemanticHARConfig:
     max_iterations: int = 5
     cluster_threshold: float = 0.1
     outlier_ratio: float = 0.2
+
+    # General Training Parameters
+    temperature: float = 0.07
+    early_stopping: bool = True
+    patience: int = 15
+    gradient_clip_norm: float = 0.5  # Gradient clipping for stability
 
     # Text Encoder
     text_encoder_batch_size: int = 16
