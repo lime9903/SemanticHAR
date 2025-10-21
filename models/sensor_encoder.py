@@ -1,13 +1,19 @@
 """
 Transformer-based sensor encoder
 """
+import os
+import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 from typing import Dict, List, Tuple, Optional
 import numpy as np
+import pandas as pd
+
 from config import SemanticHARConfig
+from dataloader.data_loader import load_sensor_data
+
 
 class PositionalEncoding(nn.Module):
     """Positional encoding"""
@@ -28,6 +34,7 @@ class PositionalEncoding(nn.Module):
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x + self.pe[:x.size(0), :]
+
 
 class SensorEncoder(nn.Module):
     """Transformer-based sensor encoder for ambient/environmental sensors"""
@@ -203,54 +210,48 @@ class SensorEncoder(nn.Module):
 
 
 class SensorEncoderDataset:
-    """Dataset for sensor encoder training with text encoder - Ambient sensor events"""
+    """Dataset for sensor encoder training with text encoder"""
     
-    def __init__(self, sensor_events_list: List[Dict], 
-                 sensor_interpretations: List[str],
-                 activities: List[str],
-                 max_events: int = 50):
+    def __init__(self, sensor_data: Dict[str, torch.Tensor], sensor_interpretations: List[str], activities: List[str]):
         """
         Args:
-            sensor_events_list: List of sensor event dictionaries
-            sensor_interpretations: List of corresponding text interpretations
+            sensor_events: Dictionary containing:
+                - sensor_types: (batch_size, max_events) - sensor type indices
+                - locations: (batch_size, max_events) - location indices
+                - places: (batch_size, max_events) - place indices
+                - durations: (batch_size, max_events) - event duration (normalized)
+            sensor_interpretations: List of corresponding text interpretations (input to text encoder)
             activities: List of activity labels
             max_events: Maximum number of events per window (for padding)
         """
-        # Filter out None values and ensure data consistency
-        valid_indices = []
-        for i, (events, interpretation) in enumerate(zip(sensor_events_list, sensor_interpretations)):
-            if events is not None and interpretation is not None:
-                valid_indices.append(i)
+        self.sensor_data = sensor_data
+        self.sensor_interpretations = sensor_interpretations
+        self.activities = activities
         
-        self.sensor_events_list = [sensor_events_list[i] for i in valid_indices]
-        self.sensor_interpretations = [sensor_interpretations[i] for i in valid_indices]
-        self.activities = [activities[i] for i in valid_indices]
-        self.max_events = max_events
-        
-        print(f"✓ SensorEncoderDataset created with {len(self.sensor_events_list)} valid samples")
+        print(f"✓ SensorEncoderDataset created with {len(self.sensor_data)} samples")
     
     def __len__(self):
-        return len(self.sensor_events_list)
+        return len(self.sensor_data)
     
     def __getitem__(self, idx):
         return {
-            'sensor_events': self.sensor_events_list[idx],
+            'sensor_data': self.sensor_data[idx],
             'sensor_interpretation': self.sensor_interpretations[idx],
             'activity': self.activities[idx]
         }
 
 
 class SensorEncoderTrainer:
-    """Sensor encoder trainer using text encoder for contrastive learning"""
+    """Sensor encoder trainer using trained text encoder for contrastive learning"""
     
     def __init__(self, config: SemanticHARConfig, text_encoder):
         self.config = config
         self.device = torch.device(config.device)
         
         self.sensor_encoder = SensorEncoder(config).to(self.device)
-        self.text_encoder = text_encoder  # Pre-trained text encoder (frozen)
+        self.text_encoder = text_encoder  # Trained text encoder (frozen)
         
-        # Freeze text encoder parameters
+        # Freeze text encoder parameters - only sensor encoder is trainable
         for param in self.text_encoder.parameters():
             param.requires_grad = False
         
@@ -259,8 +260,7 @@ class SensorEncoderTrainer:
             lr=config.sensor_encoder_learning_rate,
             weight_decay=config.sensor_encoder_weight_decay
         )
-         
-        # Use ReduceLROnPlateau instead of CosineAnnealingLR for better control
+
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='min', factor=0.7, patience=5, verbose=True, min_lr=1e-7
         )
@@ -319,45 +319,16 @@ class SensorEncoderTrainer:
         
         return (loss_s2t + loss_t2s) / 2
     
-    def train_with_interpretations(self, interpretations_file: str,
-                                 sensor_data_file: str = None,
-                                 num_epochs: int = 50,
-                                 batch_size: int = 16,
-                                 early_stopping: bool = True,
-                                 patience: int = 10) -> 'SensorEncoder':
-        """Train sensor encoder using text encoder interpretations"""
+    def train_with_interpretations(self, windows_file: str, interpretations_file: str,
+                                   num_epochs: int = 50, batch_size: int = 16,
+                                   early_stopping: bool = True, patience: int = 10) -> 'SensorEncoder':
+        """Train sensor encoder to align raw sensor data with pre-trained text encoder interpretations"""
         
-        print("=" * 60)
-        print("Sensor Encoder Training")
-        print("=" * 60)
-        print("=" * 60)
-        print("DATA SPLIT STRATEGY (40/10/40/10):")
-        print("  home_b:")
-        print("    - text_train (40%):   Text Encoder training (already used)")
-        print("    - text_val (10%):     Text Encoder validation (already used)")
-        print("    - sensor_train (40%): Sensor Encoder training ← current")
-        print("    - sensor_val (10%):   Sensor Encoder validation ← current")
-        print("  home_a:")
-        print("    - all (100%):  Inference (completely unseen)")
-        print("  MARBLE:")
-        print("    - all (100%):  Final Test (different dataset)")
-        print("=" * 60)
+        print("\nTraining sensor encoder to align raw sensor data with text encoder interpretations...")
+        print(f"  Using {self.config.source_dataset} 'train' and 'val' splits")
         
-        print("\nTraining sensor encoder to align with text encoder interpretations...")
-        print("  Using home_b sensor_train and sensor_val splits")
-        
-        # Use sensor_train and sensor_val splits directly
-        train_dataset = self._prepare_training_data(
-            interpretations_file, 
-            splits=['sensor_train'], 
-            home_filter=['home_b']
-        )
-        
-        val_dataset = self._prepare_training_data(
-            interpretations_file, 
-            splits=['sensor_val'], 
-            home_filter=['home_b']
-        )
+        train_dataset = self._prepare_training_data(windows_file, interpretations_file)
+        val_dataset = self._prepare_training_data(windows_file, interpretations_file)
         
         if len(train_dataset) == 0:
             raise ValueError("No training data found")
@@ -506,7 +477,6 @@ class SensorEncoderTrainer:
                 print(f"⨺ Could not create training curves: {e}")
         
         # Save final model
-        import os
         os.makedirs("checkpoints", exist_ok=True)
         final_model_path = "checkpoints/sensor_encoder_trained.pth"
         torch.save(self.sensor_encoder.state_dict(), final_model_path)
@@ -514,80 +484,47 @@ class SensorEncoderTrainer:
         
         return self.sensor_encoder
     
-    def _prepare_training_data(self, interpretations_file: str, splits: List[str], 
-                               home_filter: Optional[List[str]] = None) -> SensorEncoderDataset:
+    def _prepare_training_data(self, windows_file: str, interpretations_file: str) -> SensorEncoderDataset:
         """Prepare training data for sensor encoder from actual ambient sensor data"""
-        import json
-        import os
-        import pandas as pd
-        from dataloader.data_loader import load_sensor_data
-        
-        print(f"Loading sensor encoder training data from {interpretations_file}...")
-        if home_filter:
-            print(f"  Filtering for homes: {home_filter}")
+
+        # Load windows data - raw sensor data
+        with open(windows_file, 'r', encoding='utf-8') as f:
+            windows_data = json.load(f)
         
         # Load interpretations
         with open(interpretations_file, 'r', encoding='utf-8') as f:
             interpretations_data = json.load(f)
-        
-        # Load actual raw sensor data
-        print("  Loading raw sensor data from dataset...")
-        sensor_data_dict = load_sensor_data(
-            self.config, 
-            self.config.dataset_name,
-            window_size_seconds=self.config.window_size_seconds,
-            overlap_ratio=self.config.overlap_ratio
-        )
-        
-        sensor_events_list = []
+
+        sensor_data = []
         sensor_interpretations = []
         activities = []
         
-        # Extract data from specified splits (split-first structure)
-        # New structure: interpretations_data['sensor_interpretations'][split][home_id]
-        for split in interpretations_data['sensor_interpretations']:
-            if split not in splits:
-                continue
+        for split in windows_data['windows']:
+            if split == 'test':
+                continue  # Skip test split
+
+            # Get interpretation windows for this split
+            interpretation_windows = interpretations_data['sensor_interpretations'].get(split, {})
             
-            for home_id in interpretations_data['sensor_interpretations'][split]:
-                # Apply home filter if specified
-                if home_filter and home_id not in home_filter:
+            # Process each interpretation window
+            for window_key, window_data in interpretation_windows.items():
+                if 'interpretation' not in window_data or 'error' in window_data:
                     continue
                 
-                # Get windows for this split
-                interpretation_windows = interpretations_data['sensor_interpretations'][split][home_id]
+                sensor_events = {
+                    'sensor_types': torch.zeros(1, 10, dtype=torch.long),
+                    'locations': torch.zeros(1, 10, dtype=torch.long),
+                    'places': torch.zeros(1, 10, dtype=torch.long),
+                    'durations': torch.zeros(1, 10)
+                }
                 
-                # Get raw sensor windows from split-first structure
-                if split not in sensor_data_dict:
-                    print(f"⚠️ Warning: {split} not found in sensor data")
-                    continue
-                    
-                raw_windows = sensor_data_dict[split].get(home_id, [])
-                
-                # Process each interpretation window
-                for window_key, window_data in interpretation_windows.items():
-                    if 'interpretation' not in window_data or 'error' in window_data:
-                        continue
-                    
-                    # Match by index
-                    try:
-                        window_idx = int(window_key.split('_')[1]) - 1
-                        if 0 <= window_idx < len(raw_windows):
-                            raw_window_df = raw_windows[window_idx]
-                            
-                            # Extract sensor events from DataFrame
-                            sensor_events = self._extract_sensor_events_from_df(raw_window_df)
-                            
-                            if sensor_events is not None and len(sensor_events['events']) > 0:
-                                sensor_events_list.append(sensor_events)
-                            sensor_interpretations.append(window_data['interpretation'])
-                            activities.append(window_data['activity'])
-                    except (IndexError, ValueError, Exception) as e:
-                        continue
+                sensor_events_list.append(sensor_events)
+                sensor_interpretations.append(window_data['interpretation'])
+                activities.append(window_data['activity'])
         
-        print(f"✓ Loaded {len(sensor_events_list)} samples for splits: {splits}")
+        print(f"✓ Loaded {len(sensor_data)} samples")
         
-        return SensorEncoderDataset(sensor_events_list, sensor_interpretations, activities)
+        return SensorEncoderDataset(sensor_data, sensor_interpretations, activities)
     
     
     def _extract_sensor_events_from_df(self, window_df) -> Optional[Dict]:
@@ -956,7 +893,6 @@ class SensorEncoderEvaluator:
         plt.grid(True, alpha=0.3)
         
         # Save
-        import os
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
@@ -1053,7 +989,6 @@ class SensorEncoderEvaluator:
                         arrowprops=dict(arrowstyle='->', color='red', alpha=0.7))
         
         # Save
-        import os
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
@@ -1076,7 +1011,7 @@ class SensorEncoderEvaluator:
         
         # Load home_a data for final evaluation
         # home_a is completely unseen by sensor encoder
-        print("⚠️  Using home_a inference split for evaluation (completely unseen environment)")
+        print("  Using home_a inference split for evaluation (completely unseen environment)")
         test_dataset = temp_trainer._prepare_training_data(
             interpretations_file, 
             splits=['inference'],
@@ -1128,7 +1063,6 @@ class SensorEncoderEvaluator:
         }
         
         # Save results
-        import os
         results_file = os.path.join(output_dir, "sensor_encoder_evaluation_results.json")
         with open(results_file, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False, default=str)
@@ -1392,8 +1326,6 @@ class SensorEncoderInference:
     
     def _save_results(self, results: Dict, output_dir: str):
         """Save inference results and visualizations"""
-        import json
-        import os
         import matplotlib.pyplot as plt
         import seaborn as sns
         

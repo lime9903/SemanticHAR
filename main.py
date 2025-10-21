@@ -163,7 +163,9 @@ def train_lanhar(config: SemanticHARConfig):
                 torch.load(text_encoder_checkpoint, map_location=config.device)
             )
             text_encoder = text_encoder_trainer.text_encoder
+            text_decoder = text_encoder_trainer.text_decoder
             text_encoder.eval()
+            text_decoder.eval()
             
             print("✓ Text encoder checkpoint loaded successfully!")
             print(f"  Model location: {text_encoder_checkpoint}")
@@ -174,7 +176,7 @@ def train_lanhar(config: SemanticHARConfig):
             print("  Starting text encoder training...")
             
             # Train text encoder
-            text_encoder = text_encoder_trainer.train_text_encoder(
+            text_encoder, text_decoder = text_encoder_trainer.train_text_encoder(
                 interpretations_file=config.semantic_interpretations_file,
                 num_epochs=config.text_encoder_num_epochs,
                 batch_size=config.text_encoder_batch_size,
@@ -182,8 +184,8 @@ def train_lanhar(config: SemanticHARConfig):
                 patience=config.patience
             )
         
-        if not text_encoder:
-            print("✗ Failed to train text encoder")
+        if not text_encoder or not text_decoder:
+            print("✗ Failed to train text encoder/decoder")
             return None, None
             
     except Exception as e:
@@ -197,14 +199,15 @@ def train_lanhar(config: SemanticHARConfig):
     print("Step 3-2: Evaluate text encoder")
     print("-" * 60)
     
-    try:
-        evaluator = TextEncoderEvaluator(config, text_encoder=text_encoder)
-        evaluation_results = evaluator.comprehensive_evaluation(config.semantic_interpretations_file)
+    if config.use_evaluation:
+        try:
+            evaluator = TextEncoderEvaluator(config, text_encoder=text_encoder, text_decoder=text_decoder)
+            evaluation_results = evaluator.comprehensive_evaluation(config.semantic_interpretations_file)
 
-    except Exception as e:
-        print(f"✗ Error during text encoder evaluation: {e}")
-        import traceback
-        traceback.print_exc()
+        except Exception as e:
+            print(f"✗ Error during text encoder evaluation: {e}")
+            import traceback
+            traceback.print_exc()
 
     
     # Step 4: Train or load sensor encoder
@@ -239,6 +242,7 @@ def train_lanhar(config: SemanticHARConfig):
             
             # Train sensor encoder
             sensor_encoder = sensor_trainer.train_with_interpretations(
+                windows_file=config.windows_file,
                 interpretations_file=config.semantic_interpretations_file,
                 num_epochs=config.sensor_encoder_num_epochs,
                 batch_size=config.sensor_encoder_batch_size,
@@ -257,25 +261,26 @@ def train_lanhar(config: SemanticHARConfig):
     if sensor_encoder:
         print("✓ Sensor encoder trained successfully!")
         
-        # Evaluate sensor encoder
-        print("\n" + "-" * 60)
-        print("Step 4-2: Evaluate sensor encoder")
-        print("-" * 60)
-        
-        try:
-            sensor_evaluator = SensorEncoderEvaluator(config, sensor_encoder, text_encoder)
-            sensor_evaluation_results = sensor_evaluator.comprehensive_evaluation(interpretations_file)
+        if config.use_evaluation:
+            # Evaluate sensor encoder
+            print("\n" + "-" * 60)
+            print("Step 4-2: Evaluate sensor encoder")
+            print("-" * 60)
             
-            if sensor_evaluation_results:
-                print("✓ Sensor encoder evaluated successfully!")
-            else:
-                print("✗ Sensor encoder evaluation failed!")
+            try:
+                sensor_evaluator = SensorEncoderEvaluator(config, sensor_encoder, text_encoder)
+                sensor_evaluation_results = sensor_evaluator.comprehensive_evaluation(interpretations_file)
                 
-        except Exception as e:
-            print(f"✗ Error during sensor encoder evaluation: {e}")
-            import traceback
-            traceback.print_exc()
-            sensor_evaluation_results = None
+                if sensor_evaluation_results:
+                    print("✓ Sensor encoder evaluated successfully!")
+                else:
+                    print("✗ Sensor encoder evaluation failed!")
+                    
+            except Exception as e:
+                print(f"✗ Error during sensor encoder evaluation: {e}")
+                import traceback
+                traceback.print_exc()
+                sensor_evaluation_results = None
     else:
         print("✗ Training sensor encoder failed!")
         sensor_evaluation_results = None

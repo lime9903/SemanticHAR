@@ -158,6 +158,7 @@ class TextDecoder(nn.Module):
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
         return mask
 
+
 class ContrastiveLearningModule(nn.Module):
     """contrastive learning module"""
     
@@ -233,6 +234,7 @@ class ContrastiveLearningModule(nn.Module):
         loss = -torch.log(torch.sigmoid(logits) + 1e-8).mean()
         
         return loss
+
 
 class TextEncoderTrainer:
     """text encoder trainer"""
@@ -456,7 +458,7 @@ class TextEncoderTrainer:
         self.scheduler.load_state_dict(checkpoint['scheduler'])
     
     def train_text_encoder(self, interpretations_file: str, num_epochs: int = 10,
-              batch_size: int = 8, early_stopping: bool = False, patience: int = 10) -> 'TextEncoder':
+              batch_size: int = 8, early_stopping: bool = False, patience: int = 10) -> Tuple[TextEncoder, TextDecoder]:
         """Train text encoder with semantic interpretations"""
         
         print(f"\nUsing {self.config.source_dataset} train and val splits\n")
@@ -608,10 +610,9 @@ class TextEncoderTrainer:
             torch.save(self.text_encoder.state_dict(), final_model_path)
             print(f"✓ Final text encoder saved to: {final_model_path}")
         
-        return self.text_encoder
+        return self.text_encoder, self.text_decoder
 
 
-# Training utilities
 class InterpretationDataset(Dataset):
     """Dataset for semantic interpretations"""
     
@@ -766,40 +767,31 @@ def prepare_training_data(interpretations_file: str, splits: List[str] = ['train
 class TextEncoderEvaluator:
     """Text Encoder training validation class"""
     
-    def __init__(self, config: SemanticHARConfig, text_encoder: TextEncoder):
+    def __init__(self, config: SemanticHARConfig, text_encoder: TextEncoder, text_decoder: TextDecoder):
         self.config = config
         self.device = torch.device(config.device)
         
-        # Use provided text encoder
+        # Use trained text encoder/decoder
         self.text_encoder = text_encoder
-        self.text_decoder = TextDecoder(config).to(self.device)
+        self.text_decoder = text_decoder
         
         # Evaluation mode
         self.text_encoder.eval()
         self.text_decoder.eval()
     
-    def evaluate_alignment_quality(self, sensor_interpretations: List[str], 
-                                 activity_interpretations: List[str]) -> Dict[str, float]:
+    def evaluate_alignment_quality(self, sensor_interpretations: List[str],
+                                   activity_interpretations: List[str]) -> Dict[str, float]:
         """Sensor-Activity alignment quality evaluation"""
-        
-        # Data length matching
-        min_length = min(len(sensor_interpretations), len(activity_interpretations))
-        sensor_interpretations = sensor_interpretations[:min_length]
-        activity_interpretations = activity_interpretations[:min_length]
         
         with torch.no_grad():
             # Embedding generation
             sensor_embeddings = self.text_encoder(sensor_interpretations)
             activity_embeddings = self.text_encoder(activity_interpretations)
             
-            # Normalization
             sensor_embeddings = F.normalize(sensor_embeddings, p=2, dim=1)
             activity_embeddings = F.normalize(activity_embeddings, p=2, dim=1)
             
-            # Similarity matrix calculation
             similarity_matrix = torch.matmul(sensor_embeddings, activity_embeddings.T)
-            
-            # Diagonal elements (correct pairs) similarity
             diagonal_similarities = torch.diag(similarity_matrix)
             
             # Maximum similarity in each row (check if correct is the highest)
@@ -827,22 +819,21 @@ class TextEncoderEvaluator:
             'similarity_matrix': similarity_matrix.detach().cpu().numpy()
         }
     
-    def evaluate_reconstruction_quality(self, texts: List[str]) -> Dict[str, float]:
+    def evaluate_reconstruction_quality(self, sensor_interpretations: List[str]) -> Dict[str, float]:
         """Reconstruction quality evaluation with realistic autoregressive generation"""
         
-        # Embedding generation
-        embeddings = self.text_encoder(texts)
+        sensor_interpretations = sensor_interpretations[:3]
+        sensor_embeddings = self.text_encoder(sensor_interpretations)
         
         reconstruction_losses = []
         reconstruction_accuracies_teacher_forcing = []
         reconstruction_accuracies_autoregressive = []
         bleu_scores = []
         
-        for i, text in enumerate(texts[:5]):  # Limit to 5 texts for detailed evaluation
+        for i, original_text in enumerate(sensor_interpretations):
             try:
-                # Tokenization
                 tokens = self.text_encoder.tokenizer.encode(
-                    text, 
+                    original_text, 
                     add_special_tokens=True, 
                     max_length=self.config.max_sequence_length,
                     truncation=True
@@ -852,7 +843,7 @@ class TextEncoderEvaluator:
                 input_tokens = torch.tensor([tokens[:-1]], device=self.device)
                 target_tokens = torch.tensor([tokens[1:]], device=self.device)
                 
-                decoder_output = self.text_decoder(embeddings[i:i+1], input_tokens)
+                decoder_output = self.text_decoder(sensor_embeddings[i:i+1], input_tokens)
                 
                 # Loss calculation (teacher forcing)
                 loss = F.cross_entropy(
@@ -867,8 +858,8 @@ class TextEncoderEvaluator:
                 tf_accuracy = (predicted_tokens == target_tokens).float().mean().item()
                 reconstruction_accuracies_teacher_forcing.append(tf_accuracy)
                 
-                # 2. Autoregressive Generation (realistic evaluation)
-                generated_tokens = self._generate_autoregressive(embeddings[i:i+1], max_length=len(tokens))
+                # 2. Autoregressive Generation
+                generated_tokens = self._generate_autoregressive(sensor_embeddings[i:i+1], max_length=len(tokens))
                 
                 # Autoregressive accuracy (token-level)
                 if len(generated_tokens) > 1:
@@ -890,23 +881,53 @@ class TextEncoderEvaluator:
                     generated_text = self.text_encoder.tokenizer.decode(generated_tokens, skip_special_tokens=True)
                     original_text = self.text_encoder.tokenizer.decode(tokens, skip_special_tokens=True)
                     
-                    # Simple word overlap as BLEU proxy
-                    gen_words = set(generated_text.lower().split())
-                    orig_words = set(original_text.lower().split())
-                    if len(orig_words) > 0:
-                        word_overlap = len(gen_words & orig_words) / len(orig_words)
-                        bleu_scores.append(word_overlap)
-                    else:
-                        bleu_scores.append(0.0)
-                except:
+                    def calculate_bleu_score(reference: str, candidate: str) -> float:
+                        """Calculate BLEU-like score between reference and candidate text"""
+                        ref_words = reference.lower().split()
+                        cand_words = candidate.lower().split()
+                        
+                        if not ref_words or not cand_words:
+                            return 0.0
+                        
+                        # 1-gram precision
+                        ref_1grams = {}
+                        for word in ref_words:
+                            ref_1grams[word] = ref_1grams.get(word, 0) + 1
+                        
+                        cand_1grams = {}
+                        for word in cand_words:
+                            cand_1grams[word] = cand_1grams.get(word, 0) + 1
+                        
+                        # Count matches
+                        matches = 0
+                        for word, count in cand_1grams.items():
+                            matches += min(count, ref_1grams.get(word, 0))
+                        
+                        precision = matches / len(cand_words) if cand_words else 0.0
+                        
+                        # Brevity penalty
+                        if len(cand_words) < len(ref_words):
+                            brevity_penalty = np.exp(1 - len(ref_words) / len(cand_words))
+                        else:
+                            brevity_penalty = 1.0
+                        
+                        return brevity_penalty * precision
+                    
+                    bleu_score = calculate_bleu_score(original_text, generated_text)
+                    bleu_scores.append(bleu_score)
+                    
+                except Exception as e:
+                    print(f"BLEU calculation error (text {i}): {e}")
                     bleu_scores.append(0.0)
                 
             except Exception as e:
                 print(f"Reconstruction error (text {i}): {e}")
-                reconstruction_losses.append(float('inf'))
-                reconstruction_accuracies_teacher_forcing.append(0.0)
-                reconstruction_accuracies_autoregressive.append(0.0)
-                bleu_scores.append(0.0)
+
+                if len(reconstruction_losses) == i:  # Only add if not already added
+                    reconstruction_losses.append(float('inf'))
+                    reconstruction_accuracies_teacher_forcing.append(0.0)
+                    reconstruction_accuracies_autoregressive.append(0.0)
+                    bleu_scores.append(0.0)
         
         return {
             'avg_reconstruction_loss': np.mean(reconstruction_losses),
@@ -924,191 +945,82 @@ class TextEncoderEvaluator:
         self.text_decoder.eval()
         
         with torch.no_grad():
-            # Start with [CLS] token
-            generated_tokens = [self.text_encoder.tokenizer.cls_token_id]
-            
-            for _ in range(max_length - 1):
-                # Current input sequence
-                input_tokens = torch.tensor([generated_tokens], device=self.device)
+            try:
+                # Start with [CLS] token
+                cls_token_id = self.text_encoder.tokenizer.cls_token_id
+                sep_token_id = self.text_encoder.tokenizer.sep_token_id
+                pad_token_id = self.text_encoder.tokenizer.pad_token_id
                 
-                # Get decoder output
-                decoder_output = self.text_decoder(embedding, input_tokens)
+                if cls_token_id is None:
+                    cls_token_id = self.text_encoder.tokenizer.bos_token_id
+                if sep_token_id is None:
+                    sep_token_id = self.text_encoder.tokenizer.eos_token_id
                 
-                # Get next token prediction (last position)
-                next_token_logits = decoder_output[0, -1, :]
+                generated_tokens = [cls_token_id]
                 
-                # Sample next token with temperature (better than greedy)
-                temperature = 0.8  # Slightly random for diversity
-                next_token_probs = F.softmax(next_token_logits / temperature, dim=-1)
-                next_token = torch.multinomial(next_token_probs, 1).item()
-                
-                # Stop if [SEP] token is generated
-                if next_token == self.text_encoder.tokenizer.sep_token_id:
-                    break
+                for _ in range(max_length - 1):
+                    # Current input sequence
+                    input_tokens = torch.tensor([generated_tokens], device=embedding.device)
                     
-                generated_tokens.append(next_token)
-            
-            # Ensure [SEP] token at the end
-            if generated_tokens[-1] != self.text_encoder.tokenizer.sep_token_id:
-                generated_tokens.append(self.text_encoder.tokenizer.sep_token_id)
+                    # Get decoder output
+                    decoder_output = self.text_decoder(embedding, input_tokens)
+                    
+                    # Get next token prediction (last position)
+                    next_token_logits = decoder_output[0, -1, :]
+                    
+                    # Sample next token with temperature (better than greedy)
+                    temperature = 0.8  # Slightly random for diversity
+                    next_token_probs = F.softmax(next_token_logits / temperature, dim=-1)
+                    next_token = torch.multinomial(next_token_probs, 1).item()
+                    
+                    # Stop if [SEP] token is generated or if it's a pad token
+                    if next_token == sep_token_id or next_token == pad_token_id:
+                        break
+                        
+                    generated_tokens.append(next_token)
+                
+                # Ensure [SEP] token at the end if not already present
+                if sep_token_id is not None and generated_tokens[-1] != sep_token_id:
+                    generated_tokens.append(sep_token_id)
+                
+            except Exception as e:
+                print(f"Autoregressive generation error: {e}")
+                # Return minimal valid sequence
+                generated_tokens = [cls_token_id, sep_token_id] if cls_token_id and sep_token_id else [0, 1]
         
         self.text_decoder.train()
         return generated_tokens
     
-    def visualize_embeddings(self, sensor_interpretations: List[str],
-                            activity_interpretations: List[str],
-                            activities: List[str],
-                            save_path: str = "outputs/embedding_visualization.png"):
-        """3D Embedding visualization with activity-based coloring"""
-        
-        with torch.no_grad():
-            sensor_embeddings = self.text_encoder(sensor_interpretations)
-            activity_embeddings = self.text_encoder(activity_interpretations)
-        
-        all_embeddings = torch.cat([sensor_embeddings, activity_embeddings], dim=0)
-        all_embeddings_np = all_embeddings.detach().cpu().numpy()
-        
-        tsne = TSNE(n_components=3, random_state=42, perplexity=min(30, len(all_embeddings_np)-1))
-        embeddings_3d = tsne.fit_transform(all_embeddings_np)
-        
-        unique_activities = list(set(activities))
-        colors = plt.cm.Set3(np.linspace(0, 1, len(unique_activities)))
-        activity_to_color = dict(zip(unique_activities, colors))
-        
-        fig = plt.figure(figsize=(20, 15))
-        ax1 = fig.add_subplot(221, projection='3d')
-        
-        # Sensor embeddings with activity-based coloring
-        sensor_3d = embeddings_3d[:len(sensor_interpretations)]
-        for i, activity in enumerate(activities):
-            color = activity_to_color[activity]
-            ax1.scatter(sensor_3d[i, 0], sensor_3d[i, 1], sensor_3d[i, 2], 
-                       c=[color], alpha=0.7, s=60, label=activity if i == activities.index(activity) else "")
-        
-        # Activity embeddings (centers)
-        activity_3d = embeddings_3d[len(sensor_interpretations):]
-        for i, activity in enumerate(unique_activities):
-            color = activity_to_color[activity]
-            ax1.scatter(activity_3d[i, 0], activity_3d[i, 1], activity_3d[i, 2], 
-                       c=[color], alpha=0.9, s=100, marker='^', edgecolors='black', linewidth=1)
-        
-        ax1.set_title('3D Text Encoder Embeddings\n(Sensor: circles, Activity: triangles)')
-        ax1.set_xlabel('t-SNE Dimension 1')
-        ax1.set_ylabel('t-SNE Dimension 2')
-        ax1.set_zlabel('t-SNE Dimension 3')
-        
-        # XY plane
-        ax2 = fig.add_subplot(222)
-        for i, activity in enumerate(activities):
-            color = activity_to_color[activity]
-            ax2.scatter(sensor_3d[i, 0], sensor_3d[i, 1], 
-                       c=[color], alpha=0.7, s=60, label=activity if i == activities.index(activity) else "")
-        
-        for i, activity in enumerate(unique_activities):
-            color = activity_to_color[activity]
-            ax2.scatter(activity_3d[i, 0], activity_3d[i, 1], 
-                       c=[color], alpha=0.9, s=100, marker='^', edgecolors='black', linewidth=1)
-        
-        ax2.set_title('XY Plane Projection')
-        ax2.set_xlabel('t-SNE Dimension 1')
-        ax2.set_ylabel('t-SNE Dimension 2')
-        ax2.grid(True, alpha=0.3)
-        
-        # XZ plane
-        ax3 = fig.add_subplot(223)
-        for i, activity in enumerate(activities):
-            color = activity_to_color[activity]
-            ax3.scatter(sensor_3d[i, 0], sensor_3d[i, 2], 
-                       c=[color], alpha=0.7, s=60, label=activity if i == activities.index(activity) else "")
-        
-        for i, activity in enumerate(unique_activities):
-            color = activity_to_color[activity]
-            ax3.scatter(activity_3d[i, 0], activity_3d[i, 2], 
-                       c=[color], alpha=0.9, s=100, marker='^', edgecolors='black', linewidth=1)
-        
-        ax3.set_title('XZ Plane Projection')
-        ax3.set_xlabel('t-SNE Dimension 1')
-        ax3.set_ylabel('t-SNE Dimension 3')
-        ax3.grid(True, alpha=0.3)
-        
-        # YZ plane
-        ax4 = fig.add_subplot(224)
-        for i, activity in enumerate(activities):
-            color = activity_to_color[activity]
-            ax4.scatter(sensor_3d[i, 1], sensor_3d[i, 2], 
-                       c=[color], alpha=0.7, s=60, label=activity if i == activities.index(activity) else "")
-        
-        for i, activity in enumerate(unique_activities):
-            color = activity_to_color[activity]
-            ax4.scatter(activity_3d[i, 1], activity_3d[i, 2], 
-                       c=[color], alpha=0.9, s=100, marker='^', edgecolors='black', linewidth=1)
-        
-        ax4.set_title('YZ Plane Projection')
-        ax4.set_xlabel('t-SNE Dimension 2')
-        ax4.set_ylabel('t-SNE Dimension 3')
-        ax4.grid(True, alpha=0.3)
-        
-        handles = []
-        labels = []
-        for activity in unique_activities:
-            color = activity_to_color[activity]
-            handles.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color, markersize=8))
-            labels.append(activity)
-        
-        handles.extend([
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8, label='Sensor Interpretations'),
-            plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='gray', markersize=8, label='Activity Interpretations')
-        ])
-        labels.extend(['Sensor Interpretations', 'Activity Interpretations'])
-        
-        fig.legend(handles, labels, loc='center', bbox_to_anchor=(0.5, 0.02), ncol=min(6, len(unique_activities)+2))
-        
-        plt.tight_layout()
-        
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"  ✓ 3D Embedding visualization saved: {save_path}")
-        print(f"  ✓ Activities visualized: {len(unique_activities)} unique activities")
-    
-    def evaluate_similarity_matrix(self, sensor_interpretations: List[str], 
+    def evaluate_similarity_matrix(self, sensor_interpretations: List[str],
                                  activity_interpretations: List[str],
+                                 max_length: int = 50,
                                  save_path: str = "outputs/similarity_matrix.png"):
         """Similarity matrix visualization"""
         
-        # Data length matching
-        min_length = min(len(sensor_interpretations), len(activity_interpretations))
-        sensor_interpretations = sensor_interpretations[:min_length]
-        activity_interpretations = activity_interpretations[:min_length]
+        # Ensure max_length is an integer
+        max_length = int(max_length) if max_length is not None else 50
         
+        sensor_interpretations = sensor_interpretations[:max_length]
+        activity_interpretations = activity_interpretations[:max_length]
+
         with torch.no_grad():
-            # Embedding generation
             sensor_embeddings = self.text_encoder(sensor_interpretations)
             activity_embeddings = self.text_encoder(activity_interpretations)
             
-            # Normalization
             sensor_embeddings = F.normalize(sensor_embeddings, p=2, dim=1)
             activity_embeddings = F.normalize(activity_embeddings, p=2, dim=1)
-            
-            # Similarity matrix calculation
+
             similarity_matrix = torch.matmul(sensor_embeddings, activity_embeddings.T)
             similarity_matrix_np = similarity_matrix.detach().cpu().numpy()
         
         # Visualization
         plt.figure(figsize=(10, 8))
-        sns.heatmap(similarity_matrix_np, 
-                   annot=True, 
-                   fmt='.2f', 
-                   cmap='RdYlBu_r',
-                   center=0,
-                   square=True)
+        sns.heatmap(similarity_matrix_np, cmap='RdYlBu_r', center=0, square=True)
         
         plt.title('Sensor-Activity Similarity Matrix')
         plt.xlabel('Activity Interpretations')
         plt.ylabel('Sensor Interpretations')
         
-        # Save
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
@@ -1120,28 +1032,15 @@ class TextEncoderEvaluator:
                                     activities: List[str]) -> Dict:
         """Analyze pair-wise similarities between matched sensor-activity pairs"""
         
-        # Data length matching
-        min_length = min(len(sensor_interpretations), len(activity_interpretations))
-        sensor_interpretations = sensor_interpretations[:min_length]
-        activity_interpretations = activity_interpretations[:min_length]
-        activities = activities[:min_length]
-        
         with torch.no_grad():
-            # Embedding generation
             sensor_embeddings = self.text_encoder(sensor_interpretations)
             activity_embeddings = self.text_encoder(activity_interpretations)
             
-            # Normalization
             sensor_embeddings = F.normalize(sensor_embeddings, p=2, dim=1)
             activity_embeddings = F.normalize(activity_embeddings, p=2, dim=1)
             
-            # Calculate similarities for correct pairs (diagonal)
             correct_pair_similarities = torch.sum(sensor_embeddings * activity_embeddings, dim=1)
-            
-            # Calculate similarities for incorrect pairs (off-diagonal)
             similarity_matrix = torch.matmul(sensor_embeddings, activity_embeddings.T)
-            
-            # Get off-diagonal similarities
             mask = torch.eye(len(sensor_embeddings), device=self.device).bool()
             off_diagonal_similarities = similarity_matrix[~mask].view(len(sensor_embeddings), -1)
             
@@ -1174,6 +1073,131 @@ class TextEncoderEvaluator:
             'correct_pair_similarities': correct_pair_similarities.detach().cpu().numpy().tolist()
         }
     
+    def visualize_embeddings(self, sensor_interpretations: List[str],
+                            activity_interpretations: List[str],
+                            activities: List[str],
+                            save_path: str = "outputs/embedding_visualization.png"):
+        """3D Embedding visualization with activity-based coloring"""
+        
+        # Create unique activity interpretations for visualization only
+        unique_activities = list(set(activities))
+        unique_activity_interpretations = [activity_interpretations[activities.index(a)] for a in unique_activities]
+
+        with torch.no_grad():
+            sensor_embeddings = self.text_encoder(sensor_interpretations)
+            activity_embeddings = self.text_encoder(unique_activity_interpretations)
+
+            sensor_embeddings = F.normalize(sensor_embeddings, p=2, dim=1)
+            activity_embeddings = F.normalize(activity_embeddings, p=2, dim=1)
+
+        all_embeddings = torch.cat([sensor_embeddings, activity_embeddings], dim=0)
+        all_embeddings_np = all_embeddings.detach().cpu().numpy()
+        
+        tsne = TSNE(n_components=3, random_state=42, perplexity=8)
+        embeddings_3d = tsne.fit_transform(all_embeddings_np)
+        
+        colors = plt.cm.Set3(np.linspace(0, 1, len(unique_activities)))
+        activity_to_color = dict(zip(unique_activities, colors))
+        
+        fig = plt.figure(figsize=(20, 15))
+        ax1 = fig.add_subplot(221, projection='3d')
+        
+        sensor_3d = embeddings_3d[:len(sensor_interpretations)]
+        activity_3d = embeddings_3d[len(sensor_interpretations):]
+
+        for i, activity in enumerate(activities):
+            color = activity_to_color[activity]
+            ax1.scatter(sensor_3d[i, 0], sensor_3d[i, 1], sensor_3d[i, 2],
+                        c=[color], alpha=0.75, s=50, edgecolors='k', linewidth=0.3)
+
+        for i, activity in enumerate(unique_activities):
+            color = activity_to_color[activity]
+            ax1.scatter(activity_3d[i, 0], activity_3d[i, 1], activity_3d[i, 2],
+                        c=[color], alpha=0.95, s=120, marker='^', edgecolors='k', linewidth=0.8)
+        
+        ax1.set_title('3D Text Encoder Embeddings')
+        ax1.set_xlabel('t-SNE Dimension 1')
+        ax1.set_ylabel('t-SNE Dimension 2')
+        ax1.set_zlabel('t-SNE Dimension 3')
+        ax1.grid(True, alpha=0.2)
+
+        # XY plane
+        ax2 = fig.add_subplot(222)
+        for i, activity in enumerate(activities):
+            color = activity_to_color[activity]
+            ax2.scatter(sensor_3d[i, 0], sensor_3d[i, 1], 
+                    c=[color], alpha=0.7, s=60, edgecolors='k', linewidth=0.3)
+            
+        for i, activity in enumerate(unique_activities):
+            color = activity_to_color[activity]
+            ax2.scatter(activity_3d[i, 0], activity_3d[i, 1], 
+                    c=[color], alpha=0.9, s=100, marker='^', edgecolors='k', linewidth=1)
+            
+        ax2.set_title('XY Plane Projection')
+        ax2.set_xlabel('t-SNE Dimension 1')
+        ax2.set_ylabel('t-SNE Dimension 2')
+        ax2.grid(True, alpha=0.3)
+        
+        # XZ plane
+        ax3 = fig.add_subplot(223)
+        for activity in unique_activities:
+            activity_indices = [i for i, a in enumerate(activities) if a == activity]
+            if activity_indices:
+                color = activity_to_color[activity]
+                sensor_points = sensor_3d[activity_indices]
+                ax3.scatter(sensor_points[:, 0], sensor_points[:, 2], 
+                           c=[color], alpha=0.7, s=60, edgecolors='k', linewidth=0.3)
+        
+        for i, activity in enumerate(unique_activities):
+            color = activity_to_color[activity]
+            ax3.scatter(activity_3d[i, 0], activity_3d[i, 2], 
+                       c=[color], alpha=0.9, s=100, marker='^', edgecolors='k', linewidth=1)
+        
+        ax3.set_title('XZ Plane Projection')
+        ax3.set_xlabel('t-SNE Dimension 1')
+        ax3.set_ylabel('t-SNE Dimension 3')
+        ax3.grid(True, alpha=0.3)
+        
+        # YZ plane
+        ax4 = fig.add_subplot(224)
+        for activity in unique_activities:
+            activity_indices = [i for i, a in enumerate(activities) if a == activity]
+            if activity_indices:
+                color = activity_to_color[activity]
+                sensor_points = sensor_3d[activity_indices]
+                ax4.scatter(sensor_points[:, 1], sensor_points[:, 2], 
+                           c=[color], alpha=0.7, s=60, edgecolors='k', linewidth=0.3)
+        
+        for i, activity in enumerate(unique_activities):
+            color = activity_to_color[activity]
+            ax4.scatter(activity_3d[i, 1], activity_3d[i, 2], 
+                       c=[color], alpha=0.9, s=100, marker='^', edgecolors='k', linewidth=1)
+        
+        ax4.set_title('YZ Plane Projection')
+        ax4.set_xlabel('t-SNE Dimension 2')
+        ax4.set_ylabel('t-SNE Dimension 3')
+        ax4.grid(True, alpha=0.3)
+        
+        # Legend
+        handles = []
+        for activity in unique_activities:
+            color = activity_to_color[activity]
+            handles.append(plt.Line2D([0], [0], marker='o', color='w',
+                                    markerfacecolor=color, markeredgecolor='k',
+                                    markersize=8, label=activity))
+
+        handles.append(plt.Line2D([0], [0], marker='o', color='k', label='Sensor', markersize=6))
+        handles.append(plt.Line2D([0], [0], marker='^', color='k', label='Activity', markersize=6))
+        
+        fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, 0.02), ncol=4, frameon=False, fontsize=9)
+
+        plt.tight_layout(rect=[0, 0.05, 1, 1])
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  ✓ 3D Embedding visualization saved: {save_path}")
+
     def analyze_category_similarities(self, sensor_interpretations: List[str], 
                                     activity_interpretations: List[str],
                                     activities: List[str]) -> Dict:
@@ -1190,21 +1214,13 @@ class TextEncoderEvaluator:
             'Grooming': 1,
             'Spare_Time/TV': 3,
             'Leaving': 4,
-            'Snack': 2
+            'Snack': 3
         }
         
-        # Data length matching
-        min_length = min(len(sensor_interpretations), len(activity_interpretations))
-        sensor_interpretations = sensor_interpretations[:min_length]
-        activity_interpretations = activity_interpretations[:min_length]
-        activities = activities[:min_length]
-        
         with torch.no_grad():
-            # Embedding generation
             sensor_embeddings = self.text_encoder(sensor_interpretations)
             activity_embeddings = self.text_encoder(activity_interpretations)
             
-            # Normalization
             sensor_embeddings = F.normalize(sensor_embeddings, p=2, dim=1)
             activity_embeddings = F.normalize(activity_embeddings, p=2, dim=1)
             
@@ -1265,16 +1281,18 @@ class TextEncoderEvaluator:
                                      activities: List[str], output_dir: str):
         """Create detailed visualizations for analysis"""
         
-        # Data length matching
-        min_length = min(len(sensor_interpretations), len(activity_interpretations))
-        sensor_interpretations = sensor_interpretations[:min_length]
-        activity_interpretations = activity_interpretations[:min_length]
-        activities = activities[:min_length]
-        
         # Activity to category mapping
         activity_categories = {
-            'Sleeping': 0, 'Toileting': 1, 'Showering': 1, 'Breakfast': 2, 'Lunch': 2,
-            'Dinner': 2, 'Grooming': 1, 'Spare_Time/TV': 3, 'Leaving': 4, 'Snack': 2
+            'Sleeping': 0,
+            'Toileting': 1, 
+            'Showering': 1,
+            'Breakfast': 2,
+            'Lunch': 2,
+            'Dinner': 2,
+            'Grooming': 1,
+            'Spare_Time/TV': 3,
+            'Leaving': 4,
+            'Snack': 3
         }
         
         with torch.no_grad():
@@ -1391,8 +1409,6 @@ class TextEncoderEvaluator:
                     sensor_interpretations.append(window_data['interpretation'])
                     activities.append(window_data['activity'])
         
-        print(f"  Using {len(sensor_interpretations)} samples for evaluation")
-        
         # Activity interpretations extraction and proper matching
         for activity, interpretation_data in data.get('activity_interpretations', {}).items():
             if 'interpretation' in interpretation_data:
@@ -1405,12 +1421,14 @@ class TextEncoderEvaluator:
                 matched_activity_interpretations.append(activity_interpretation[activity])
             else:
                 raise ValueError("✗ No matched sensor-activity interpretation pair")
-        
-        max_samples = min(50, len(sensor_interpretations))
+
+        max_samples = min(80, len(sensor_interpretations))
+        print(f"  Using {max_samples} samples in total for evaluation of {len(sensor_interpretations)} samples")
+
         sensor_interpretations = sensor_interpretations[:max_samples]
         activities = activities[:max_samples]
         matched_activity_interpretations = matched_activity_interpretations[:max_samples]
-        
+
         print(f" Evaluation data: {len(sensor_interpretations)} sensors, {len(matched_activity_interpretations)} activities")
         
         # 1. Alignment quality evaluation
@@ -1420,7 +1438,7 @@ class TextEncoderEvaluator:
         
         # 2. Reconstruction quality evaluation
         reconstruction_results = self.evaluate_reconstruction_quality(
-            sensor_interpretations[:10]  # Reconstruction is only tested for part
+            sensor_interpretations
         )
         
         # 3. Visualization
@@ -1431,7 +1449,8 @@ class TextEncoderEvaluator:
         
         self.evaluate_similarity_matrix(
             sensor_interpretations, matched_activity_interpretations,
-            os.path.join(output_dir, "similarity_matrix.png")
+            max_length=50,
+            save_path=os.path.join(output_dir, "similarity_matrix.png")
         )
         
         # 4. Detailed pair-wise and category analysis
@@ -1549,15 +1568,3 @@ class TextEncoderEvaluator:
         print(f"   Teacher Forcing Accuracy:   {summary['reconstruction_accuracy']:.3f} (training-like, optimistic)")
         print(f"   Autoregressive Accuracy:    {summary['reconstruction_accuracy_ar']:.3f} (realistic, pessimistic)")
         print(f"   BLEU Score (semantic):      {summary['bleu_score']:.3f} (word overlap)")
-        
-        if summary['reconstruction_accuracy'] > 0.8:
-            print("   Note: High TF accuracy is expected (teacher forcing)")
-        if summary['reconstruction_accuracy_ar'] > 0.5:
-            print("   Note: Good AR accuracy indicates strong reconstruction capability")
-        elif summary['reconstruction_accuracy_ar'] < 0.2:
-            print("   Warning: Low AR accuracy - reconstruction may be challenging")
-        
-        print(f"\nRECONSTRUCTION INSIGHT:")
-        print(f"   - Teacher Forcing: Training method (optimistic results)")
-        print(f"   - Autoregressive: Real inference (realistic results)")
-        print(f"   - Reconstruction is mainly for regularization, not exact reproduction")
