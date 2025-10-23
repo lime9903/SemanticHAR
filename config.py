@@ -22,6 +22,7 @@ class SemanticHARConfig:
     uci_adl_data_path: str = os.path.join(data_dir, "UCI ADL Binary Dataset")
     windows_file: str = os.path.join(output_dir, "windows.json")
     semantic_interpretations_file: str = os.path.join(output_dir, "semantic_interpretations.json")
+    matched_windows_file: str = os.path.join(output_dir, "matched_windows.json")
 
     # Data
     window_size_seconds: int = 60
@@ -43,12 +44,12 @@ class SemanticHARConfig:
     outlier_ratio: float = 0.2
 
     # General Training Parameters
-    temperature: float = 0.07
     early_stopping: bool = True
-    patience: int = 15
-    gradient_clip_norm: float = 0.5  # Gradient clipping for stability
 
     # Text Encoder
+    text_encoder_temperature: float = 0.07
+    text_encoder_patience: int = 15
+    text_encoder_gradient_clip_norm: float = 0.5
     text_encoder_batch_size: int = 16
     text_encoder_learning_rate: float = 1e-5
     text_encoder_num_epochs: int = 100
@@ -63,9 +64,12 @@ class SemanticHARConfig:
     text_encoder_attention_dropout: float = 0.1
 
     # Sensor Encoder
-    sensor_encoder_batch_size: int = 16  # Reduced for more stable training
-    sensor_encoder_learning_rate: float = 5e-4  # Increased from 2e-5 for better learning
-    sensor_encoder_num_epochs: int = 50
+    sensor_encoder_temperature: float = 0.1
+    sensor_encoder_patience: int = 10
+    sensor_encoder_gradient_clip_norm: float = 1.0
+    sensor_encoder_batch_size: int = 32
+    sensor_encoder_learning_rate: float = 1e-4
+    sensor_encoder_num_epochs: int = 100
     sensor_encoder_weight_decay: float = 0.01
     sensor_encoder_input_dim: int = 9
     sensor_encoder_hidden_dim: int = 768  # Match BERT output dimension

@@ -150,24 +150,26 @@ class SemanticGenerator:
             # Process each window
             for i, window_data in enumerate(tqdm(windows, desc=f"    {split}")):
                 try:
+                    window_id = window_data['window_id']
                     # Generate sensor interpretation
                     interpretation = self.generate_sensor_interpretation(window_data)
-                    
-                    # Save result
-                    window_id = f"window_{i+1}"
-                    split_results[window_id] = {
+
+                    split_results[f"window_{i+1}"] = {
                         'interpretation': interpretation,
-                        'activity': window_data['activity']
+                        'activity': window_data.get('activity', 'Unknown'),
+                        'window_id': window_id  # To find corresponding window data for sensor encoder training
                     }
-                    
+
                     successful_interpretations += 1
                     total_interpretations_generated += 1
                     
                 except Exception as e:
                     print(f"    ✗ Error processing window {i+1}: {e}")
+                    activity = window_data.get('activity', 'Unknown') if 'window_data' in locals() else 'Unknown'
+                    
                     split_results[f"window_{i+1}"] = {
                         'error': str(e),
-                        'activity': activity if 'activity' in locals() else 'Unknown'
+                        'activity': activity
                     }
             
             results['sensor_interpretations'][split] = split_results

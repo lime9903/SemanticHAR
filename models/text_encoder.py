@@ -165,7 +165,7 @@ class ContrastiveLearningModule(nn.Module):
     def __init__(self, config: SemanticHARConfig):
         super(ContrastiveLearningModule, self).__init__()
         self.config = config
-        self.temperature = config.temperature
+        self.temperature = config.text_encoder_temperature
         
     def alignment_loss(self, sensor_embeddings: torch.Tensor, 
                       activity_embeddings: torch.Tensor) -> torch.Tensor:
@@ -173,7 +173,7 @@ class ContrastiveLearningModule(nn.Module):
         sensor_embeddings = F.normalize(sensor_embeddings, p=2, dim=1)
         activity_embeddings = F.normalize(activity_embeddings, p=2, dim=1)
         
-        similarity_matrix = torch.matmul(sensor_embeddings, activity_embeddings.T) / self.temperature
+        similarity_matrix = torch.matmul(sensor_embeddings, activity_embeddings.T) / self.config.text_encoder_temperature
         
         batch_size = sensor_embeddings.size(0)
         labels = torch.arange(batch_size, device=sensor_embeddings.device)
@@ -190,7 +190,7 @@ class ContrastiveLearningModule(nn.Module):
         embeddings = F.normalize(embeddings, p=2, dim=1)
         
         # similarity matrix
-        similarity_matrix = torch.matmul(embeddings, embeddings.T) / self.temperature
+        similarity_matrix = torch.matmul(embeddings, embeddings.T) / self.config.text_encoder_temperature
         
         # create category mask
         category_mask = (categories.unsqueeze(0) == categories.unsqueeze(1)).float()
@@ -216,7 +216,7 @@ class ContrastiveLearningModule(nn.Module):
         embeddings = F.normalize(embeddings, p=2, dim=1)
         
         # similarity matrix
-        similarity_matrix = torch.matmul(embeddings, embeddings.T) / self.temperature
+        similarity_matrix = torch.matmul(embeddings, embeddings.T) / self.config.text_encoder_temperature
         
         # create activity mask
         activity_mask = (activities.unsqueeze(0) == activities.unsqueeze(1)).float()
@@ -312,7 +312,7 @@ class TextEncoderTrainer:
         # Gradient clipping for stability
         torch.nn.utils.clip_grad_norm_(
             list(self.text_encoder.parameters()) + list(self.text_decoder.parameters()),
-            max_norm=self.config.gradient_clip_norm
+            max_norm=self.config.text_encoder_gradient_clip_norm
         )
         
         self.optimizer.step()
@@ -686,14 +686,14 @@ def load_interpretations_from_json(json_file: str) -> Tuple[List[Dict], Dict[str
     with open(json_file, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
-    all_sensor_data = []
+    sensor_interpretations = []
     activity_interpretations = {}
     
     # Load all sensor data with split information
     for split in data['sensor_interpretations']:
         for window_id, window_data in data['sensor_interpretations'][split].items():
             if isinstance(window_data, dict) and 'interpretation' in window_data and 'error' not in window_data:
-                all_sensor_data.append({
+                sensor_interpretations.append({
                     'interpretation': window_data['interpretation'],
                     'activity': window_data['activity'],
                     'split': split,
@@ -705,13 +705,13 @@ def load_interpretations_from_json(json_file: str) -> Tuple[List[Dict], Dict[str
         if 'interpretation' in activity_data and 'error' not in activity_data:
             activity_interpretations[activity] = activity_data['interpretation']
     
-    print(f"Loaded {len(all_sensor_data)} total sensor interpretations")
+    print(f"Loaded {len(sensor_interpretations)} total sensor interpretations")
     print(f"Loaded {len(activity_interpretations)} activity interpretations")
     
     # Cache the data
-    _loaded_data_cache[json_file] = (all_sensor_data, activity_interpretations)
+    _loaded_data_cache[json_file] = (sensor_interpretations, activity_interpretations)
     
-    return all_sensor_data, activity_interpretations
+    return sensor_interpretations, activity_interpretations
 
 
 def prepare_training_data(interpretations_file: str, splits: List[str] = ['train']) -> InterpretationDataset:

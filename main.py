@@ -181,7 +181,7 @@ def train_lanhar(config: SemanticHARConfig):
                 num_epochs=config.text_encoder_num_epochs,
                 batch_size=config.text_encoder_batch_size,
                 early_stopping=config.early_stopping,
-                patience=config.patience
+                patience=config.text_encoder_patience
             )
         
         if not text_encoder or not text_decoder:
@@ -194,12 +194,12 @@ def train_lanhar(config: SemanticHARConfig):
         traceback.print_exc()
         return None, None
     
-    # Evaluate text encoder
-    print("\n" + "-" * 60)
-    print("Step 3-2: Evaluate text encoder")
-    print("-" * 60)
-    
     if config.use_evaluation:
+        # Evaluate text encoder
+        print("\n" + "-" * 60)
+        print("Step 3-2: Evaluate text encoder")
+        print("-" * 60)
+
         try:
             evaluator = TextEncoderEvaluator(config, text_encoder=text_encoder, text_decoder=text_decoder)
             evaluation_results = evaluator.comprehensive_evaluation(config.semantic_interpretations_file)
@@ -247,7 +247,7 @@ def train_lanhar(config: SemanticHARConfig):
                 num_epochs=config.sensor_encoder_num_epochs,
                 batch_size=config.sensor_encoder_batch_size,
                 early_stopping=config.early_stopping,
-                patience=config.patience
+                patience=config.sensor_encoder_patience
             )
         
         if not sensor_encoder:
@@ -269,7 +269,7 @@ def train_lanhar(config: SemanticHARConfig):
             
             try:
                 sensor_evaluator = SensorEncoderEvaluator(config, sensor_encoder, text_encoder)
-                sensor_evaluation_results = sensor_evaluator.comprehensive_evaluation(interpretations_file)
+                sensor_evaluation_results = sensor_evaluator.comprehensive_evaluation(config.semantic_interpretations_file)
                 
                 if sensor_evaluation_results:
                     print("✓ Sensor encoder evaluated successfully!")
@@ -344,16 +344,19 @@ def main():
     print(f"  - Sensor encoder learning rate: {config.sensor_encoder_learning_rate}")
     
     if args.mode == 'train':
+        print("\n" + "+" * 40)
+        print("\tTraining Mode")
+        print("+" * 40)
+
         text_encoder, sensor_encoder = train_lanhar(config)
         
         if text_encoder and sensor_encoder:
             print("\n✓ Both text encoder and sensor encoder trained successfully!")
             print("✓ Text encoder and sensor encoder are ready for inference!")
             
-            # Run inference automatically after successful training
-            print("\n" + "=" * 60)
+            print("\n" + "-" * 60)
             print("Running Inference on Unseen Data")
-            print("=" * 60)
+            print("-" * 60)
             
             try:
                 inference_engine = SensorEncoderInference(config, sensor_encoder, text_encoder)
@@ -381,9 +384,9 @@ def main():
             print("\n✗ Failed to train text encoder!")
 
     elif args.mode == 'inference':
-        print("\n" + "-" * 60)
-        print("Only inference mode")
-        print("-" * 60)
+        print("\n" + "+" * 40)
+        print("\tInference Mode")
+        print("+" * 40)
         
         try:
             # Load trained models
@@ -434,9 +437,9 @@ def main():
             traceback.print_exc()
 
     elif args.mode == 'generate':
-        print("\n" + "-" * 60)
-        print("Only Generate Mode")
-        print("-" * 60)
+        print("\n" + "+" * 40)
+        print("\tGenerate Mode")
+        print("+" * 40)
         
         try:
             generator = SemanticGenerator(config)
