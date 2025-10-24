@@ -31,10 +31,10 @@ class SemanticGenerator:
         self.sensor_interpretations = {}
         self.activity_interpretations = {}
         
-        print(f"⨠ SemanticGenerator initialized")
-        print(f"   Device: {config.device}")
+        print(f"✓ SemanticGenerator initialized")
+        print(f"  - Device: {config.device}")
         from config import OPENAI_API_KEY
-        print(f"   OpenAI API: {'✓' if OPENAI_API_KEY else '✗'}")
+        print(f"  - OpenAI API: {'✓' if OPENAI_API_KEY else '✗'}")
     
 
     def generate_sensor_interpretation(self, window_data: Dict) -> str:
@@ -236,7 +236,6 @@ class SemanticGenerator:
 
     def load_interpretations(self, interpretations_file: str) -> Dict:
         """Load existing interpretations file"""
-        print(f"⨠ Loading interpretations from: {interpretations_file}")
         
         with open(interpretations_file, 'r', encoding='utf-8') as f:
             data = json.load(f)

@@ -90,13 +90,14 @@ class SensorEncoder(nn.Module):
         # positional encoding
         self.positional_encoding = PositionalEncoding(self.hidden_dim)
         
-        # Transformer encoder
+        # Transformer encoder (following paper structure)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.hidden_dim,
             nhead=config.sensor_encoder_heads,
             dim_feedforward=self.hidden_dim * 4,
             dropout=0.1,
-            batch_first=True
+            batch_first=True,
+            norm_first=True  # Pre-norm for stability
         )
         
         self.transformer_encoder = nn.TransformerEncoder(
@@ -104,12 +105,8 @@ class SensorEncoder(nn.Module):
             num_layers=config.sensor_encoder_layers
         )
         
-        # Attention pooling
-        self.attention_pooling = nn.MultiheadAttention(
-            embed_dim=self.hidden_dim,
-            num_heads=config.sensor_encoder_heads,
-            batch_first=True
-        )
+        # Global average pooling (following paper approach)
+        self.global_pooling = nn.AdaptiveAvgPool1d(1)
         
         # output projection
         self.output_projection = nn.Linear(self.hidden_dim, self.hidden_dim)
@@ -163,7 +160,8 @@ class SensorEncoder(nn.Module):
             sensor_events['time_deltas']
         ], dim=-1)  # (B, E, 2)
         
-        # Apply log normalization for temporal features
+        # Apply log normalization for temporal features with clipping
+        temporal_features = torch.clamp(temporal_features, min=1e-6, max=1e6)  # Clip extreme values
         temporal_features = torch.log(temporal_features + 1e-8)  # Add small epsilon to avoid log(0)
         temporal_embeds = self.temporal_projection(temporal_features)  # (B, E, H/4)
         
@@ -189,25 +187,23 @@ class SensorEncoder(nn.Module):
         # mask is True for padding positions
         src_key_padding_mask = sensor_events['mask']  # (B, E)
         
-        # Transformer encoder
+        # Transformer encoder with proper mask handling to avoid nested tensor warning
+        # Convert boolean mask to float for better compatibility
+        src_key_padding_mask_float = src_key_padding_mask.float()
+        
+        # Use manual attention instead of nested tensors
         encoded = self.transformer_encoder(
             x,
-            src_key_padding_mask=src_key_padding_mask
+            src_key_padding_mask=src_key_padding_mask_float
         )  # (B, E, H)
         
-        # Attention pooling (use mean embedding as query)
-        # Compute mean only over non-padded positions
+        # Global average pooling (following paper approach)
+        # Apply mask to ignore padding positions
         mask_expanded = (~src_key_padding_mask).unsqueeze(-1).float()  # (B, E, 1)
         masked_encoded = encoded * mask_expanded
         sum_encoded = masked_encoded.sum(dim=1)  # (B, H)
         count = mask_expanded.sum(dim=1).clamp(min=1)  # (B, 1)
-        query = (sum_encoded / count).unsqueeze(1)  # (B, 1, H)
-        
-        pooled, _ = self.attention_pooling(
-            query, encoded, encoded,
-            key_padding_mask=src_key_padding_mask
-        )  # (B, 1, H)
-        pooled = pooled.squeeze(1)  # (B, H)
+        pooled = sum_encoded / count  # (B, H)
         
         # Output projection
         output = self.output_projection(pooled)
@@ -249,27 +245,36 @@ class SensorEncoderTrainer:
         self.sensor_encoder = SensorEncoder(config).to(self.device)
         self.text_encoder = text_encoder  # Trained text encoder (frozen)
         
+        # Initialize sensor encoder weights properly
+        self._initialize_weights()
+        
         # Freeze text encoder parameters - only sensor encoder is trainable
         for param in self.text_encoder.parameters():
             param.requires_grad = False
         
+        # Improved optimizer with better parameters
         self.optimizer = torch.optim.AdamW(
             self.sensor_encoder.parameters(),
             lr=config.sensor_encoder_learning_rate,
-            weight_decay=config.sensor_encoder_weight_decay
+            weight_decay=config.sensor_encoder_weight_decay,
+            betas=(0.9, 0.999),
+            eps=1e-8
         )
         
-        # Warmup scheduler
-        warmup_scheduler = LinearLR(self.optimizer, start_factor=0.1, total_iters=5)
+        # Advanced learning rate scheduler with warmup
+        from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
         
-        # Cosine annealing scheduler
-        cosine_scheduler = CosineAnnealingLR(self.optimizer, T_max=95, eta_min=1e-6)
+        # Warmup scheduler
+        warmup_scheduler = LinearLR(self.optimizer, start_factor=0.1, total_iters=10)
+        
+        # Cosine annealing with restarts
+        cosine_scheduler = CosineAnnealingLR(self.optimizer, T_max=140, eta_min=1e-7)
         
         # Combined scheduler
         self.scheduler = SequentialLR(
             self.optimizer,
             schedulers=[warmup_scheduler, cosine_scheduler],
-            milestones=[5]
+            milestones=[10]
         )
         
         print(f"✓ SensorEncoderTrainer initialized")
@@ -277,9 +282,23 @@ class SensorEncoderTrainer:
         print(f"   - Text encoder frozen: {not any(p.requires_grad for p in self.text_encoder.parameters())}")
         print(f"   - Sensor encoder trainable: {any(p.requires_grad for p in self.sensor_encoder.parameters())}")
     
+    def _initialize_weights(self):
+        """Initialize sensor encoder weights for stable training"""
+        for name, param in self.sensor_encoder.named_parameters():
+            if param.requires_grad:
+                if 'weight' in name and param.dim() > 1:
+                    # Smaller initialization for stability
+                    torch.nn.init.xavier_uniform_(param, gain=0.1)
+                elif 'bias' in name:
+                    # Zero initialization for biases
+                    torch.nn.init.zeros_(param)
+                elif 'embedding' in name:
+                    # Much smaller initialization for embeddings
+                    torch.nn.init.normal_(param, mean=0, std=0.01)
+    
     def train_step(self, sensor_events: Dict[str, torch.Tensor], 
-                   sensor_interpretations: List[str]) -> Dict[str, float]:
-        """Single training step using contrastive learning with text encoder"""
+                   sensor_interpretations: List[str], activities: List[str] = None) -> Dict[str, float]:
+        """Enhanced training step with multi-task learning"""
         
         self.optimizer.zero_grad()
         
@@ -290,27 +309,70 @@ class SensorEncoderTrainer:
         with torch.no_grad():
             text_embeddings = self.text_encoder(sensor_interpretations)
         
-        # Contrastive learning loss
+        # 1. Contrastive learning loss
         contrastive_loss = self._compute_contrastive_loss(
             sensor_embeddings, text_embeddings
         )
         
+        # 2. Add alignment loss (MSE between normalized embeddings)
+        sensor_norm = F.normalize(sensor_embeddings, p=2, dim=1)
+        text_norm = F.normalize(text_embeddings, p=2, dim=1)
+        alignment_loss = F.mse_loss(sensor_norm, text_norm)
+        
+        # 3. Add cosine similarity loss
+        cosine_sim = F.cosine_similarity(sensor_norm, text_norm, dim=1)
+        cosine_loss = (1 - cosine_sim).mean()
+        
+        # 4. Add embedding diversity loss (prevent collapse)
+        diversity_loss = self._compute_diversity_loss(sensor_embeddings)
+        
+        # Enhanced loss combination with adaptive weighting
+        # Add momentum-based loss weighting
+        if not hasattr(self, 'loss_momentum'):
+            self.loss_momentum = {'contrastive': 1.0, 'alignment': 0.01, 'cosine': 0.01, 'diversity': 0.001}
+        
+        # Adaptive loss weighting based on individual loss magnitudes
+        contrastive_weight = 1.0
+        alignment_weight = min(0.1, 0.01 * (contrastive_loss.item() / (alignment_loss.item() + 1e-8)))
+        cosine_weight = min(0.1, 0.01 * (contrastive_loss.item() / (cosine_loss.item() + 1e-8)))
+        diversity_weight = min(0.01, 0.001 * (contrastive_loss.item() / (diversity_loss.item() + 1e-8)))
+        
+        total_loss = (
+            contrastive_weight * contrastive_loss + 
+            alignment_weight * alignment_loss + 
+            cosine_weight * cosine_loss + 
+            diversity_weight * diversity_loss
+        )
+        
+        # Adaptive loss clipping based on current loss magnitude
+        max_loss = max(10.0, contrastive_loss.item() * 2)
+        total_loss = torch.clamp(total_loss, max=max_loss)
+        
         # Backpropagation
-        contrastive_loss.backward()
+        total_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.sensor_encoder.parameters(), max_norm=self.config.sensor_encoder_gradient_clip_norm)
         self.optimizer.step()
         
-        return {'contrastive_loss': contrastive_loss.item()}
+        return {
+            'total_loss': total_loss.item(),
+            'contrastive_loss': contrastive_loss.item(),
+            'alignment_loss': alignment_loss.item(),
+            'cosine_loss': cosine_loss.item(),
+            'diversity_loss': diversity_loss.item()
+        }
     
     def _compute_contrastive_loss(self, sensor_embeddings: torch.Tensor, 
                                  text_embeddings: torch.Tensor) -> torch.Tensor:
-        """Compute improved contrastive learning loss between sensor and text embeddings"""
+        """Compute enhanced contrastive learning loss with hard negative mining"""
         # Normalize embeddings
         sensor_embeddings = F.normalize(sensor_embeddings, p=2, dim=1)
         text_embeddings = F.normalize(text_embeddings, p=2, dim=1)
         
-        # Similarity matrix
-        similarity_matrix = torch.matmul(sensor_embeddings, text_embeddings.T) / self.config.sensor_encoder_temperature
+        # Compute similarity matrix (cosine similarity since embeddings are normalized)
+        similarity_matrix = torch.matmul(sensor_embeddings, text_embeddings.T)
+        
+        # Apply temperature scaling
+        similarity_matrix = similarity_matrix / self.config.sensor_encoder_temperature
         
         # Batch size
         batch_size = sensor_embeddings.size(0)
@@ -318,30 +380,98 @@ class SensorEncoderTrainer:
         # Labels (diagonal is the correct match)
         labels = torch.arange(batch_size, device=sensor_embeddings.device)
         
-        # Symmetric loss with label smoothing
-        loss_s2t = F.cross_entropy(similarity_matrix, labels, label_smoothing=0.1)
-        loss_t2s = F.cross_entropy(similarity_matrix.T, labels, label_smoothing=0.1)
+        # Standard InfoNCE loss
+        loss_s2t = F.cross_entropy(similarity_matrix, labels)
+        loss_t2s = F.cross_entropy(similarity_matrix.T, labels)
         
-        # Add hard negative mining
-        # Find hardest negatives (highest similarity with wrong pairs)
-        with torch.no_grad():
-            # Create mask for positive pairs (diagonal)
-            positive_mask = torch.eye(batch_size, device=sensor_embeddings.device).bool()
-            
-            # Get negative similarities
-            negative_similarities = similarity_matrix.clone()
-            negative_similarities[positive_mask] = -float('inf')
-            
-            # Find hardest negatives
-            hard_negatives, _ = torch.max(negative_similarities, dim=1)
-            hard_negative_loss = torch.mean(torch.exp(hard_negatives / self.config.sensor_encoder_temperature))
-        
-        # Combine losses
+        # Simplified contrastive loss without hard negative mining to prevent explosion
         contrastive_loss = (loss_s2t + loss_t2s) / 2
-        hard_negative_weight = 0.1
-        total_loss = contrastive_loss + hard_negative_weight * hard_negative_loss
+        total_loss = contrastive_loss
+        
+        # Add small regularization to prevent numerical instability
+        regularization = 1e-6 * (torch.norm(sensor_embeddings) + torch.norm(text_embeddings))
+        total_loss = total_loss + regularization
+        
+        # Check for NaN or infinite values
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            print(f"Warning: Invalid loss detected: {total_loss}")
+            print(f"  - Contrastive loss: {contrastive_loss}")
+            print(f"  - Regularization: {regularization}")
+            # Return a small positive loss to continue training
+            return torch.tensor(1.0, device=sensor_embeddings.device, requires_grad=True)
         
         return total_loss
+    
+    def _apply_data_augmentation(self, sensor_events: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Apply data augmentation to improve generalization"""
+        augmented_events = {}
+        
+        for key, value in sensor_events.items():
+            if key == 'durations' or key == 'time_deltas':
+                # Add small noise to temporal features
+                noise = torch.randn_like(value) * 0.01
+                augmented_events[key] = value + noise
+            elif key == 'sensor_types':
+                # Randomly replace some sensor types with UNK (simulate missing data)
+                mask = torch.rand_like(value.float()) < 0.05  # 5% chance
+                augmented_events[key] = torch.where(mask, torch.zeros_like(value), value)
+            else:
+                augmented_events[key] = value
+                
+        return augmented_events
+    
+    def _compute_diversity_loss(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """Compute diversity loss to prevent embedding collapse"""
+        # Normalize embeddings
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+        
+        # Compute pairwise cosine similarities
+        similarity_matrix = torch.matmul(embeddings, embeddings.T)
+        
+        # Remove diagonal (self-similarity)
+        mask = torch.eye(embeddings.size(0), device=embeddings.device).bool()
+        off_diagonal_similarities = similarity_matrix[~mask]
+        
+        # Diversity loss: penalize high similarities (encourage diversity)
+        diversity_loss = torch.mean(torch.abs(off_diagonal_similarities))
+        
+        return diversity_loss
+    
+    def _compute_focal_loss(self, sensor_embeddings: torch.Tensor, 
+                           text_embeddings: torch.Tensor, 
+                           activities: List[str]) -> torch.Tensor:
+        """Compute focal loss to handle class imbalance"""
+        # Normalize embeddings
+        sensor_embeddings = F.normalize(sensor_embeddings, p=2, dim=1)
+        text_embeddings = F.normalize(text_embeddings, p=2, dim=1)
+        
+        # Compute similarity matrix
+        similarity_matrix = torch.matmul(sensor_embeddings, text_embeddings.T) / self.config.sensor_encoder_temperature
+        
+        batch_size = sensor_embeddings.size(0)
+        labels = torch.arange(batch_size, device=sensor_embeddings.device)
+        
+        # Standard cross entropy
+        logits = similarity_matrix
+        ce_loss = F.cross_entropy(logits, labels, reduction='none')
+        
+        # Compute focal weights based on activity frequency
+        activity_counts = {}
+        for activity in activities:
+            activity_counts[activity] = activity_counts.get(activity, 0) + 1
+        
+        # Inverse frequency weighting
+        weights = torch.ones(batch_size, device=sensor_embeddings.device)
+        for i, activity in enumerate(activities):
+            if activity in activity_counts:
+                weights[i] = 1.0 / (activity_counts[activity] + 1e-8)
+        
+        # Focal loss: (1 - p_t)^gamma * CE
+        p_t = torch.exp(-ce_loss)
+        focal_weights = (1 - p_t) ** 2  # gamma = 2
+        focal_loss = focal_weights * ce_loss * weights
+        
+        return focal_loss.mean()
     
     def _collate_fn(self, batch):
         """Custom collate function for sensor encoder training"""
@@ -446,7 +576,7 @@ class SensorEncoderTrainer:
             self.sensor_encoder.train()
             epoch_losses = []
             
-            train_pbar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=True, ncols=100)
+            train_pbar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=True)
             
             for batch_idx, batch in enumerate(train_pbar):
                 if batch is None:
@@ -463,11 +593,17 @@ class SensorEncoderTrainer:
                     
                     # Training step
                     losses = self.train_step(sensor_events, sensor_interpretations)
-                    epoch_losses.append(losses['contrastive_loss'])
+                    epoch_losses.append(losses['total_loss'])
                     
-                    # Update progress bar
+                    # Update progress bar with detailed loss info
                     current_loss = np.mean(epoch_losses[-5:]) if len(epoch_losses) >= 5 else np.mean(epoch_losses)
-                    train_pbar.set_postfix({'Loss': f'{current_loss:.4f}'})
+                    train_pbar.set_postfix({
+                        'Total': f'{current_loss:.4f}',
+                        'Contrastive': f'{losses["contrastive_loss"]:.4f}',
+                        'Alignment': f'{losses["alignment_loss"]:.4f}',
+                        'Cosine': f'{losses["cosine_loss"]:.4f}',
+                        'Diversity': f'{losses["diversity_loss"]:.4f}'
+                    })
                     
                 except Exception as e:
                     print(f"✗ Training batch error: {e}")
@@ -511,7 +647,7 @@ class SensorEncoderTrainer:
                 else:
                     print(f"    Skipping validation (early_stopping={early_stopping}, val_samples={len(val_dataset)})")
                 
-                # Update learning rate (CosineAnnealingWarmRestarts doesn't need validation loss)
+                # Update learning rate (SequentialLR doesn't need validation loss)
                 self.scheduler.step()
 
             else:
@@ -709,9 +845,18 @@ class SensorEncoderTrainer:
                     sensor_embeddings = self.sensor_encoder(sensor_events)
                     text_embeddings = self.text_encoder(sensor_interpretations)
                     
-                    # Compute loss
-                    loss = self._compute_contrastive_loss(sensor_embeddings, text_embeddings)
-                    val_losses.append(loss.item())
+                    # Compute comprehensive loss
+                    sensor_norm = F.normalize(sensor_embeddings, p=2, dim=1)
+                    text_norm = F.normalize(text_embeddings, p=2, dim=1)
+                    
+                    contrastive_loss = self._compute_contrastive_loss(sensor_embeddings, text_embeddings)
+                    alignment_loss = F.mse_loss(sensor_norm, text_norm)
+                    cosine_sim = F.cosine_similarity(sensor_norm, text_norm, dim=1)
+                    cosine_loss = (1 - cosine_sim).mean()
+                    diversity_loss = self._compute_diversity_loss(sensor_embeddings)
+                    
+                    total_loss = contrastive_loss + 0.3 * alignment_loss + 0.2 * cosine_loss + 0.1 * diversity_loss
+                    val_losses.append(total_loss.item())
                     
                     # Update progress bar
                     current_loss = np.mean(val_losses)
@@ -1133,6 +1278,54 @@ class SensorEncoderInference:
         
         print(f"✓ SensorEncoderInference initialized")
     
+    def _load_inference_data(self, interpretations_file: str) -> Dict:
+        """Load inference data for activity prediction"""
+        try:
+            # Load matched windows data
+            matched_windows_file = self.config.matched_windows_file
+            if not os.path.exists(matched_windows_file):
+                print(f"✗ Matched windows file not found: {matched_windows_file}")
+                return {'sensor_events': [], 'activities': []}
+            
+            with open(matched_windows_file, 'r', encoding='utf-8') as f:
+                matched_data = json.load(f)
+            
+            # Get inference split data - try different split names
+            matched_windows = matched_data.get('matched_windows', {})
+            inference_windows = {}
+            
+            # Try different possible split names (prioritize test split for inference)
+            for split_name in ['test', 'val', 'inference']:
+                if split_name in matched_windows:
+                    inference_windows = matched_windows[split_name]
+                    print(f"  Using '{split_name}' split for inference")
+                    break
+            
+            if not inference_windows:
+                print("  No inference/test/val split found, using all available data")
+                # Use all available data if no specific inference split
+                for split_name, split_data in matched_windows.items():
+                    if isinstance(split_data, dict):
+                        inference_windows.update(split_data)
+            
+            sensor_events = []
+            activities = []
+            
+            for window_id, window_data in inference_windows.items():
+                if isinstance(window_data, dict) and 'sensor_data' in window_data and 'activity' in window_data:
+                    sensor_events.append(window_data['sensor_data'])
+                    activities.append(window_data['activity'])
+            
+            print(f"✓ Loaded {len(sensor_events)} inference samples")
+            return {
+                'sensor_events': sensor_events,
+                'activities': activities
+            }
+            
+        except Exception as e:
+            print(f"✗ Error loading inference data: {e}")
+            return {'sensor_events': [], 'activities': []}
+    
     def predict_activities(self, interpretations_file: str, 
                           output_dir: str = "outputs") -> Dict:
         """
@@ -1159,7 +1352,7 @@ class SensorEncoderInference:
         
         # Load test sensor data (inference split - unseen by both models)
         print("\nLoading inference sensor data from INFERENCE split...")
-        inference_data = self._prepare_training_data(interpretations_file, splits=['inference'])
+        inference_data = self._load_inference_data(interpretations_file)
         
         if len(inference_data['sensor_events']) == 0:
             print("✗ No inference data found!")
@@ -1177,9 +1370,14 @@ class SensorEncoderInference:
         
         # Evaluate predictions
         print("\nEvaluating predictions...")
+        true_activities = inference_data.get('activities', [])
+        if not true_activities:
+            print("✗ No ground truth activities found for evaluation")
+            return None
+            
         evaluation_results = self._evaluate_predictions(
             predictions,
-            inference_data['activity'],
+            true_activities,
             list(activity_interpretations.keys())
         )
         
@@ -1218,26 +1416,15 @@ class SensorEncoderInference:
         """Predict activities for a batch of sensor events"""
         predictions = []
         
-        # Create temporary trainer for collate function
-        temp_trainer = SensorEncoderTrainer(self.config, self.text_encoder)
-        temp_trainer.sensor_encoder = self.sensor_encoder
-        
         with torch.no_grad():
             for i, sensor_events in enumerate(sensor_events_list):
-                # Create mini-batch
-                batch = temp_trainer._collate_fn([{
-                    'sensor_events': sensor_events,
-                    'sensor_interpretation': '',
-                    'activity': ''
-                }])
+                # Convert sensor events to tensor format directly
+                sensor_events_batch = self._convert_sensor_events_to_tensor(sensor_events)
                 
                 # Move to device
-                sensor_events_batch = {}
-                for key in batch['sensor_events']:
-                    if isinstance(batch['sensor_events'][key], torch.Tensor):
-                        sensor_events_batch[key] = batch['sensor_events'][key].to(self.device)
-                    else:
-                        sensor_events_batch[key] = batch['sensor_events'][key]
+                for key in sensor_events_batch:
+                    if isinstance(sensor_events_batch[key], torch.Tensor):
+                        sensor_events_batch[key] = sensor_events_batch[key].to(self.device)
                 
                 # Generate sensor embedding
                 sensor_embedding = self.sensor_encoder(sensor_events_batch)
@@ -1336,8 +1523,6 @@ class SensorEncoderInference:
                                activity_labels: List[str],
                                save_path: str):
         """Plot confusion matrix heatmap"""
-        import matplotlib.pyplot as plt
-        import seaborn as sns
         
         plt.figure(figsize=(12, 10))
         

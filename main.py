@@ -285,9 +285,6 @@ def train_lanhar(config: SemanticHARConfig):
         print("✗ Training sensor encoder failed!")
         sensor_evaluation_results = None
     
-    print("\nSemanticHAR system training pipeline completed!")
-    print("=" * 60)
-    
     return text_encoder, sensor_encoder
 
 
@@ -385,7 +382,7 @@ def main():
 
     elif args.mode == 'inference':
         print("\n" + "+" * 40)
-        print("\tInference Mode")
+        print("\t    Inference Mode")
         print("+" * 40)
         
         try:
@@ -426,8 +423,8 @@ def main():
             
             if inference_results:
                 print("\n✓ Inference successful!")
-                print(f"  Final Accuracy: {inference_results['accuracy']:.4f}")
-                print(f"  Final F1-Score: {inference_results['f1']:.4f}")
+                print(f"  - Final accuracy: {inference_results['accuracy']:.4f}")
+                print(f"  - Final F1-score: {inference_results['f1']:.4f}")
             else:
                 print("✗ Inference failed!")
                 
@@ -438,7 +435,7 @@ def main():
 
     elif args.mode == 'generate':
         print("\n" + "+" * 40)
-        print("\tGenerate Mode")
+        print("\t    Generate Mode")
         print("+" * 40)
         
         try:
@@ -449,24 +446,19 @@ def main():
                 interpretations_data = generator.load_interpretations(config.semantic_interpretations_file)
             else:
                 print(f"Generating semantic interpretations to: {config.semantic_interpretations_file}")
-                
-                interpretations_file = generator.generate_interpretations(
-                    dataset_name=config.dataset_name,
-                    window_size_seconds=config.window_size_seconds,
-                    overlap_ratio=config.overlap_ratio,
-                    output_file=config.semantic_interpretations_file
-                )
+                interpretations_file = generator.generate_interpretations(config)
             
             if config.semantic_interpretations_file:
-                print(f"✓ Semantic interpretations generated: {config.semantic_interpretations_file}")
-                summary = generator.get_interpretations_summary(config.semantic_interpretations_file)
+                print(f"✓ Semantic interpretations generated successfully: {config.semantic_interpretations_file}")
             else:
                 print("✗ Failed to generate semantic interpretations")
                 
         except Exception as e:
             print(f"✗ Error generating interpretations: {e}")
     
-    print("\nExecution completed!")
+    print("\n" + "=" * 60)
+    print("SemanticHAR System Execution Completed!")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

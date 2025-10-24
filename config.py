@@ -64,12 +64,12 @@ class SemanticHARConfig:
     text_encoder_attention_dropout: float = 0.1
 
     # Sensor Encoder
-    sensor_encoder_temperature: float = 0.1
-    sensor_encoder_patience: int = 10
-    sensor_encoder_gradient_clip_norm: float = 1.0
-    sensor_encoder_batch_size: int = 32
-    sensor_encoder_learning_rate: float = 1e-4
-    sensor_encoder_num_epochs: int = 100
+    sensor_encoder_temperature: float = 0.05  # Lower temperature for sharper contrastive learning
+    sensor_encoder_patience: int = 20
+    sensor_encoder_gradient_clip_norm: float = 0.1  # Much stronger gradient clipping
+    sensor_encoder_batch_size: int = 64  # Larger batch size for better gradient estimates
+    sensor_encoder_learning_rate: float = 2e-5
+    sensor_encoder_num_epochs: int = 150
     sensor_encoder_weight_decay: float = 0.01
     sensor_encoder_input_dim: int = 9
     sensor_encoder_hidden_dim: int = 768  # Match BERT output dimension
