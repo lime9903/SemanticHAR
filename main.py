@@ -15,7 +15,7 @@ from config import SemanticHARConfig, OPENAI_API_KEY
 from dataloader.data_loader import load_sensor_data
 from llm.semantic_generator import SemanticGenerator
 from models.text_encoder import TextEncoder, TextEncoderTrainer, TextEncoderEvaluator
-from models.sensor_encoder import SensorEncoder, SensorEncoderTrainer, SensorEncoderEvaluator, SensorEncoderInference
+from models.sensor_encoder import SensorEncoder, SensorEncoderTrainer, SensorEncoderEvaluator
 
 
 def setup_environment():
@@ -269,7 +269,7 @@ def train_lanhar(config: SemanticHARConfig):
             
             try:
                 sensor_evaluator = SensorEncoderEvaluator(config, sensor_encoder, text_encoder)
-                sensor_evaluation_results = sensor_evaluator.comprehensive_evaluation(config.semantic_interpretations_file)
+                sensor_evaluation_results = sensor_evaluator.comprehensive_evaluation(config.windows_file, config.semantic_interpretations_file)
                 
                 if sensor_evaluation_results:
                     print("✓ Sensor encoder evaluated successfully!")
@@ -342,7 +342,7 @@ def main():
     
     if args.mode == 'train':
         print("\n" + "+" * 40)
-        print("\tTraining Mode")
+        print("\t    Training Mode")
         print("+" * 40)
 
         text_encoder, sensor_encoder = train_lanhar(config)
@@ -352,15 +352,15 @@ def main():
             print("✓ Text encoder and sensor encoder are ready for inference!")
             
             print("\n" + "-" * 60)
-            print("Running Inference on Unseen Data")
+            print("Inference on Unseen Data (Test Set)")
             print("-" * 60)
             
             try:
-                inference_engine = SensorEncoderInference(config, sensor_encoder, text_encoder)
+                sensor_evaluator = SensorEncoderEvaluator(config, sensor_encoder, text_encoder)
                 interpretations_file = config.semantic_interpretations_file
                 
                 if os.path.exists(interpretations_file):
-                    inference_results = inference_engine.predict_activities(interpretations_file)
+                    inference_results = sensor_evaluator.predict_activities(interpretations_file)
                     
                     if inference_results:
                         print("\n✓ Inference successful!")
@@ -375,10 +375,9 @@ def main():
                 traceback.print_exc()
                 
         elif text_encoder:
-            print("\n✓ Text encoder trained successfully!")
-            print("✗ Failed to train sensor encoder!")
+            print("✗ Successfully trained text encoder, but failed to train sensor encoder")
         else:
-            print("\n✗ Failed to train text encoder!")
+            print("✗ Failed to train text encoder and sensor encoder")
 
     elif args.mode == 'inference':
         print("\n" + "+" * 40)
@@ -389,6 +388,7 @@ def main():
             # Load trained models
             text_encoder_path = os.path.join(config.model_dir, "text_encoder_trained.pth")
             sensor_encoder_path = os.path.join(config.model_dir, "sensor_encoder_trained.pth")
+            windows_file = config.windows_file
             interpretations_file = config.semantic_interpretations_file
             
             if not os.path.exists(text_encoder_path):
@@ -397,6 +397,10 @@ def main():
             
             if not os.path.exists(sensor_encoder_path):
                 print("✗ Sensor encoder checkpoint not found. Please run 'train' mode first.")
+                return
+            
+            if not os.path.exists(windows_file):
+                print("✗ Windows file not found. Please run 'train' mode first.")
                 return
             
             if not os.path.exists(interpretations_file):
@@ -413,13 +417,27 @@ def main():
             # Load sensor encoder
             print("Loading sensor encoder...")
             sensor_encoder = SensorEncoder(config).to(config.device)
-            sensor_encoder.load_state_dict(torch.load(sensor_encoder_path, map_location=config.device))
+            
+            # Load checkpoint with vocabulary
+            checkpoint = torch.load(sensor_encoder_path, map_location=config.device)
+            sensor_encoder.load_state_dict(checkpoint['sensor_encoder'])
+            
+            # Load vocabulary if available
+            if 'location_vocab' in checkpoint:
+                sensor_encoder.location_vocab = checkpoint['location_vocab']
+                sensor_encoder.location_to_idx = checkpoint['location_to_idx']
+                print(f"  Loaded location vocabulary: {len(sensor_encoder.location_vocab)} items")
+            if 'place_vocab' in checkpoint:
+                sensor_encoder.place_vocab = checkpoint['place_vocab']
+                sensor_encoder.place_to_idx = checkpoint['place_to_idx']
+                print(f"  Loaded place vocabulary: {len(sensor_encoder.place_vocab)} items")
+            
             sensor_encoder.eval()
             print("✓ Sensor encoder loaded")
             
             # Run inference
-            inference_engine = SensorEncoderInference(config, sensor_encoder, text_encoder)
-            inference_results = inference_engine.predict_activities(interpretations_file)
+            sensor_evaluator = SensorEncoderEvaluator(config, sensor_encoder, text_encoder)
+            inference_results = sensor_evaluator.predict_activities(windows_file, interpretations_file)
             
             if inference_results:
                 print("\n✓ Inference successful!")
