@@ -28,8 +28,10 @@ class SemanticHARConfig:
     window_size_seconds: int = 60
     overlap_ratio: float = 0.8
     use_event_based: bool = True
+    use_multi_user: bool = False
+    use_multi_modal: bool = False
     source_dataset: str = "UCI_ADL_home_b"  # TODO: choices (UCI_ADL_home_a, UCI_ADL_home_b, MARBLE)
-    target_dataset: str = "UCI_ADL_home_a"
+    target_dataset: str = "MARBLE"
     source_train_ratio: float = 0.8  # 80% for train, 20% for val
     
     # LLM

@@ -36,6 +36,9 @@ class SensorDataset:
         self.config = config
         self.source_dataset = config.source_dataset
         self.target_dataset = config.target_dataset
+        self.window_size = config.window_size_seconds
+        self.overlap = config.overlap_ratio
+        
         self.source_sensor_data, self.source_activity_label, self.source_activity_name, self.target_sensor_data, self.target_activity_label, self.target_activity_name = self._load_data()
 
     
@@ -61,121 +64,220 @@ class SensorDataset:
         return source_sensor_data, source_activity_label, source_activity_name, target_sensor_data, target_activity_label, target_activity_name
     
     def _load_marble_data(self) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-        """MARBLE Dataset loading"""
-        data_files = []
-        labels = []
-        activities = []
-        
-        # MARBLE Dataset structure: dataset/{activity_code}/instance{num}/environmental.csv
-        dataset_path = os.path.join(self.data_path, "dataset")
-        
+        """MARBLE Dataset loading - Environmental sensors only"""
+        dataset_path = os.path.join(self.config.marble_data_path, "dataset")
+
         if not os.path.exists(dataset_path):
-            print(f"MARBLE Dataset path not found: {dataset_path}")
+            print(f"✗ MARBLE Dataset path not found: {dataset_path}")
             return np.array([]), np.array([]), []
         
-        # Activity code mapping (MARBLE code -> activity name)
-        activity_mapping = {
-            'A1a': 'sleeping', 'A1e': 'sleeping', 'A1m': 'sleeping',
-            'A2a': 'toileting', 'A2e': 'toileting', 'A2m': 'toileting',
-            'A4mae': 'toileting',
-            'B1a': 'showering', 'B1e': 'showering', 'B1m': 'showering',
-            'B2a': 'grooming', 'B2e': 'grooming', 'B2m': 'grooming',
-            'B4mae': 'grooming',
-            'C1a': 'breakfast', 'C1e': 'breakfast', 'C1m': 'breakfast',
-            'C2a': 'lunch', 'C2e': 'lunch', 'C2m': 'lunch',
-            'C4mae': 'dinner',
-            'D1a': 'spare_time', 'D1e': 'spare_time', 'D1m': 'spare_time',
-            'D4mae': 'spare_time'
+        # Environmental sensor location mapping
+        env_sensor_mapping = {
+            'R1': 'pantry',
+            'R2': 'cutlery drawer',
+            'R5': 'pots drawer',
+            'R6': 'medicines cabinet',
+            'R7': 'fridge',
+            'E1': 'stove',
+            'E2': 'television',
+            'P1': 'dining room chair',
+            'P2': 'office chair',
+            'P3': 'living room couch',
+            'P4': 'dining room chair',
+            'P5': 'dining room chair',
+            'P6': 'dining room chair',
+            'P7': 'living room couch',
+            'P8': 'living room couch',
+            'P9': 'living room couch'
         }
         
-        for activity_code in os.listdir(dataset_path):
-            if activity_code in activity_mapping:
-                activity_name = activity_mapping[activity_code]
-                activity_path = os.path.join(dataset_path, activity_code)
+        print(f"\nProcessing MARBLE dataset from {dataset_path}")
+        
+        all_sensor_data = []
+        
+        # Process all scenarios
+        for scenario_dir in os.listdir(dataset_path):
+            scenario_path = os.path.join(dataset_path, scenario_dir)
+            if not os.path.isdir(scenario_path):
+                continue
                 
-                if os.path.isdir(activity_path):
-                    # Process each instance
-                    for instance_dir in os.listdir(activity_path):
-                        instance_path = os.path.join(activity_path, instance_dir)
-                        if os.path.isdir(instance_path):
-                            env_file = os.path.join(instance_path, "environmental.csv")
+            print(f"Processing scenario: {scenario_dir}")
+            
+            # Process each instance in the scenario
+            for instance_dir in os.listdir(scenario_path):
+                instance_path = os.path.join(scenario_path, instance_dir)
+                if not os.path.isdir(instance_path):
+                    continue
+                    
+                print(f"  Processing instance: {instance_dir}")
+                
+                # Load environmental data for this instance
+                env_file = os.path.join(instance_path, "environmental.csv")
+                if not os.path.exists(env_file):
+                    print(f"    No environmental data found for {instance_dir}")
+                    continue
+                    
+                try:
+                    env_df = pd.read_csv(env_file)
+                    if env_df.empty:
+                        print(f"    Empty environmental data for {instance_dir}")
+                        continue
+                        
+                    # Process each subject in the instance
+                    for subject_dir in os.listdir(instance_path):
+                        subject_path = os.path.join(instance_path, subject_dir)
+                        if not os.path.isdir(subject_path):
+                            continue
                             
-                            if os.path.exists(env_file):
-                                try:
-                                    # Load environmental sensor data
-                                    df = pd.read_csv(env_file)
-                                    
-                                    # Process sensor data
-                                    sensor_data = self._process_marble_sensor_data(df)
-                                    
-                                    if len(sensor_data) > 0:
-                                        data_files.append(sensor_data)
-                                        labels.append(len(activities))
-                                        activities.append(activity_name)
-                                        
-                                except Exception as e:
-                                    print(f"File loading error {env_file}: {e}")
-                                    continue
+                        try:
+                            # Load labels and locations
+                            labels_file = os.path.join(subject_path, 'labels.csv')
+                            locations_file = os.path.join(subject_path, 'locations.csv')
+
+                            if not os.path.exists(labels_file) or not os.path.exists(locations_file):
+                                print(f'Warning: Could not find files from {labels_file} or {locations_file}')
+                                continue
+                                
+                            labels_df = pd.read_csv(labels_file)
+                            locations_df = pd.read_csv(locations_file)
+                            
+                            # Process environmental data for this subject
+                            sensor_data = []
+                            
+                            for _, row in env_df.iterrows():
+                                timestamp = row['ts']
+                                sensor_id = row['sensor_id']
+
+                                # Map sensor location
+                                sensor_location = env_sensor_mapping.get(sensor_id, 'Unknown')
+                                
+                                # Determine sensor type
+                                if sensor_id.startswith('R'):
+                                    sensor_type = 'Magnetic'
+                                elif sensor_id.startswith('E'):
+                                    sensor_type = 'Smart Plug'
+                                elif sensor_id.startswith('P'):
+                                    sensor_type = 'Pressure Mat'
+                                else:
+                                    sensor_type = 'Unknown'
+
+                                activity_name = 'Unknown'
+                                place_name = 'Unknown'
+                                duration = 0
+                                
+                                # Find corresponding activity
+                                for _, label_row in labels_df.iterrows():
+                                    if label_row['ts_start'] <= timestamp <= label_row['ts_end']:
+                                        # Map activity name to ID
+                                        activity_name = label_row['act'].capitalize()
+                                        break
+
+                                # Find corresponding location
+                                for _, loc_row in locations_df.iterrows():
+                                    if loc_row['ts_start'] <= timestamp <= loc_row['ts_end']:
+                                        place_name = loc_row['location'].capitalize()
+                                        break
+                            
+                                sensor_data.append({
+                                    'scenario': scenario_dir,
+                                    'instance': instance_dir,
+                                    'subject': subject_dir,
+                                    'timestamp': timestamp,
+                                    'sensor_location': sensor_location,
+                                    'sensor_type': sensor_type,
+                                    'sensor_place': place_name,
+                                    'activity': activity_name,
+                                    'sensor_duration': duration,
+                                    'sensor_id': sensor_id,
+                                    'sensor_status': row['sensor_status']
+                                })
+
+                            if sensor_data:
+                                all_sensor_data.extend(sensor_data)
+                            
+                        except Exception as e:
+                            print(f"    Error loading subject data from {subject_path}: {e}")
+                            continue
+                            
+                except Exception as e:
+                    print(f"  Error processing instance {instance_dir}: {e}")
+                    continue
         
-        # Window sliding to split data
-        windowed_data = []
-        windowed_labels = []
-        
-        for data, label in zip(data_files, labels):
-            if len(data) >= self.window_size:
-                step_size = int(self.window_size * (1 - self.overlap))
-                for i in range(0, len(data) - self.window_size + 1, step_size):
-                    window = data[i:i + self.window_size]
-                    windowed_data.append(window)
-                    windowed_labels.append(label)
-        
-        return np.array(windowed_data), np.array(windowed_labels), activities
-    
-    def _process_marble_sensor_data(self, df: pd.DataFrame) -> np.ndarray:
-        """MARBLE Sensor data preprocessing"""
-        # Sort timestamps
-        df = df.sort_values('ts')
-        
-        # Separate data by sensor ID and extract features
-        sensor_features = []
-        
-        # Unique sensor IDs
-        unique_sensors = df['sensor_id'].unique()
-        
-        # Extract features for each sensor
-        for sensor_id in unique_sensors:
-            sensor_data = df[df['sensor_id'] == sensor_id].copy()
+        if len(all_sensor_data) > 0:
+            # Calculate duration of each sensor triggered data
+            all_sensor_data = pd.DataFrame(all_sensor_data)
+            all_sensor_data = all_sensor_data.sort_values('timestamp', ignore_index=True)
+            all_sensor_data['timestamp'] = pd.to_datetime(all_sensor_data['timestamp'], unit='ms')
             
-            # Track sensor status changes
-            sensor_data['status_numeric'] = (sensor_data['sensor_status'] == 'ON').astype(int)
+            # Calculate sensor duration based on ON/OFF status
+            all_sensor_data = self._calculate_sensor_durations(all_sensor_data)
             
-            # Time-based features
-            sensor_data['time_diff'] = sensor_data['ts'].diff().fillna(0)
-            sensor_data['duration'] = sensor_data['time_diff']
-            
-            # Sensor-based statistical features
-            features = [
-                sensor_data['status_numeric'].mean(),  # ON ratio
-                sensor_data['status_numeric'].std(),   # Standard deviation of status changes
-                sensor_data['duration'].mean(),        # Mean duration
-                sensor_data['duration'].std(),         # Standard deviation of duration
-                len(sensor_data),                      # Number of events
-                sensor_data['status_numeric'].sum()    # Total ON time
-            ]
-            
-            sensor_features.extend(features)
-        
-        # Pad to fixed dimension (6 features per sensor, maximum 20 sensors)
-        max_sensors = 20
-        features_per_sensor = 6
-        max_features = max_sensors * features_per_sensor
-        
-        if len(sensor_features) < max_features:
-            sensor_features.extend([0] * (max_features - len(sensor_features)))
+            activity_label = np.array(all_sensor_data['activity'])
+            activity_name = all_sensor_data['activity'].unique().tolist()
+            print(f"\nCreated MARBLE dataset with {len(all_sensor_data)} sensor-activity pairs")
+            print(f"Sensor data: {all_sensor_data[:3]}")
+            print(f"Activity names: {activity_name}")
         else:
-            sensor_features = sensor_features[:max_features]
+            print("✗ No valid data found in MARBLE dataset")
+            return np.array([]), np.array([]), []
+    
+        return all_sensor_data, activity_label, activity_name
+    
+    def _calculate_sensor_durations(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate sensor duration based on ON/OFF status changes"""
         
-        return np.array(sensor_features)
+        df['duration'] = 0.0
+        
+        # Group by sensor_id, scenario, instance, and subject to track state changes per sensor per session
+        grouped = df.groupby(['sensor_id', 'scenario', 'instance', 'subject'])
+        
+        for (sensor_id, scenario, instance, subject), group in grouped:
+            if len(group) < 2:
+                continue
+                
+            # Sort by timestamp
+            group_sorted = group.sort_values('timestamp')
+            
+            # Track ON/OFF state changes
+            current_state = None
+            on_timestamp = None
+            on_event_idx = None
+            
+            for idx, row in group_sorted.iterrows():
+                status = row['sensor_status']
+                
+                if status == 'ON' and current_state != 'ON':
+                    # Sensor turned ON
+                    on_timestamp = row['timestamp']
+                    on_event_idx = idx
+                    current_state = 'ON'
+                    
+                elif status == 'OFF' and current_state == 'ON':
+                    # Sensor turned OFF - calculate duration
+                    if on_timestamp is not None and on_event_idx is not None:
+                        duration_seconds = (row['timestamp'] - on_timestamp).total_seconds()
+                        
+                        # Update duration only for the ON event
+                        df.loc[on_event_idx, 'duration'] = duration_seconds
+                    
+                    current_state = 'OFF'
+                    on_timestamp = None
+                    on_event_idx = None
+                    
+                elif status == 'OFF' and current_state != 'OFF':
+                    # Sensor was already OFF
+                    current_state = 'OFF'
+                    on_timestamp = None
+                    on_event_idx = None
+        
+        # Update sensor_duration column
+        df['sensor_duration'] = df['duration']
+        
+        # Keep only ON events
+        df_filtered = df[(df['sensor_status'] == 'ON') & (df['duration'] >= 0)].copy()
+        df_filtered = df_filtered.drop('duration', axis=1)
+        
+        return df_filtered
     
     def _load_uci_adl_data(self, dataset_name: str = "UCI_ADL_home_a") -> Tuple[List[pd.DataFrame], List[str], List[str]]:
         """UCI ADL Dataset loading"""
@@ -361,6 +463,10 @@ def load_sensor_data(config: SemanticHARConfig, use_event_based: bool = True) ->
     # Process source dataset (train + val)
     print(f"\nProcessing source dataset: {config.source_dataset}")
     
+    if source_sensor_data is None or len(source_sensor_data) == 0:
+        print(f"  ✗ No source sensor data available")
+        return split_data
+    
     if use_event_based:
         print(f"  Processing {len(source_sensor_data)} events with event-based grouping...")
         # Create event-based windows for source data
@@ -382,6 +488,10 @@ def load_sensor_data(config: SemanticHARConfig, use_event_based: bool = True) ->
     
     # Process target dataset (test)
     print(f"\nProcessing target dataset: {config.target_dataset}")
+    
+    if target_sensor_data is None or len(target_sensor_data) == 0:
+        print(f"  ✗ No target sensor data available")
+        return split_data
     
     if use_event_based:
         print(f"  Processing {len(target_sensor_data)} events with event-based grouping...")
@@ -417,6 +527,20 @@ def load_sensor_data(config: SemanticHARConfig, use_event_based: bool = True) ->
 def _create_event_based_windows(df: pd.DataFrame) -> List[pd.DataFrame]:
     """Create event-based windows"""
     
+    if df is None or len(df) == 0:
+        print("    Warning: Empty DataFrame provided to _create_event_based_windows")
+        return []
+    
+    # Check if timestamp column exists
+    if 'timestamp' not in df.columns:
+        print(f"    Error: 'timestamp' column not found in DataFrame. Available columns: {df.columns.tolist()}")
+        return []
+    
+    # Convert timestamp to datetime if it's not already
+    if df['timestamp'].dtype in ['int64', 'int32', 'float64', 'float32']:
+        # Assume timestamp is in milliseconds (UNIX timestamp)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    
     # Sort by timestamp
     df_sorted = df.sort_values('timestamp').reset_index(drop=True)
     
@@ -449,6 +573,20 @@ def _create_time_based_windows(df: pd.DataFrame, window_size_seconds: int, overl
     """Create time windows based on sensor events duration"""
     window_size_seconds = int(window_size_seconds)
     overlap_ratio = float(overlap_ratio)
+    
+    if df is None or len(df) == 0:
+        print("    Warning: Empty DataFrame provided to _create_time_based_windows")
+        return []
+    
+    # Check if timestamp column exists
+    if 'timestamp' not in df.columns:
+        print(f"    Error: 'timestamp' column not found in DataFrame. Available columns: {df.columns.tolist()}")
+        return []
+    
+    # Convert timestamp to datetime if it's not already
+    if df['timestamp'].dtype in ['int64', 'int32', 'float64', 'float32']:
+        # Assume timestamp is in milliseconds (UNIX timestamp)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     
     # Sort by timestamp
     df_sorted = df.sort_values('timestamp').reset_index(drop=True)

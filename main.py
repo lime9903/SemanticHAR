@@ -298,12 +298,12 @@ def main():
     parser.add_argument('--mode', type=str, default='train', 
                        choices=['train', 'inference', 'generate'],
                        help='Execution mode')
-    parser.add_argument('--source_dataset', type=str, default='UCI_ADL_home_b',
+    parser.add_argument('--source_dataset', type=str, default=None,
                        choices=['UCI_ADL_home_b', 'UCI_ADL_home_a', 'MARBLE'],
                        help='Source dataset')
-    parser.add_argument('--target_dataset', type=str, default='UCI_ADL_home_a',
+    parser.add_argument('--target_dataset', type=str, default=None,
                        choices=['UCI_ADL_home_b', 'UCI_ADL_home_a', 'MARBLE'],
-                       help='Target dataset')
+                      help='Target dataset')
     parser.add_argument('--window_size', type=int, default=60,
                        help='Time window size in seconds')
     parser.add_argument('--overlap', type=float, default=0.8,
@@ -437,7 +437,7 @@ def main():
             
             # Run inference
             sensor_evaluator = SensorEncoderEvaluator(config, sensor_encoder, text_encoder)
-            inference_results = sensor_evaluator.predict_activities(windows_file, interpretations_file)
+            inference_results = sensor_evaluator.predict_activities(interpretations_file)
             
             if inference_results:
                 print("\n✓ Inference successful!")

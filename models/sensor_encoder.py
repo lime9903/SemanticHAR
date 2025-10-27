@@ -4,6 +4,7 @@ Transformer-based sensor encoder
 import os
 import json
 import math
+from sklearn.metrics import classification_report
 from tqdm import tqdm
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
@@ -1284,7 +1285,7 @@ class SensorEncoderEvaluator:
         else:
             print("   POOR: Sensor encoder training needs more work.")
     
-    def _load_inference_data(self) -> Dict:
+    def _load_inference_data(self, interpretations_file: str) -> Dict:
         """Load inference data for activity prediction"""
         try:
             # Load matched windows data
@@ -1381,29 +1382,32 @@ class SensorEncoderEvaluator:
         
         # Evaluate predictions if true labels are available
         if true_activities:
-            accuracy = self._evaluate_predictions(predictions, true_activities, activity_labels)
+            evaluation_results = self._evaluate_predictions(predictions, true_activities, activity_labels)
         else:
-            accuracy = 0.0
-        
-        # Save results
-        results = {
-            'predictions': predictions,
-            'true_activities': true_activities,
-            'activity_labels': activity_labels,
-            'accuracy': accuracy,
-            'num_samples': len(sensor_events_list)
-        }
+            evaluation_results = {
+                'accuracy': 0.0,
+                'precision': 0.0,
+                'recall': 0.0,
+                'f1': 0.0,
+                'confusion_matrix': [],
+                'per_class_metrics': {},
+                'activity_labels': activity_labels,
+                'total_samples': len(sensor_events_list),
+                'predictions': predictions,
+                'true_activities': true_activities
+            }
         
         # Save to file
         os.makedirs("outputs", exist_ok=True)
         results_file = "outputs/inference_results.json"
         with open(results_file, 'w', encoding='utf-8') as f:
-            json.dump(results, f, indent=2, ensure_ascii=False, default=str)
+            json.dump(evaluation_results, f, indent=2, ensure_ascii=False, default=str)
         
         print(f"✓ Inference results saved: {results_file}")
-        print(f"✓ Accuracy: {accuracy:.2%}")
+        print(f"✓ Accuracy: {evaluation_results['accuracy']:.2%}")
         
-        return results
+        
+        return evaluation_results
     
     def _predict_batch(self, sensor_events_list: List[Dict], 
                       activity_embeddings: torch.Tensor,
@@ -1443,19 +1447,36 @@ class SensorEncoderEvaluator:
             print(f"Warning: Mismatch in prediction and true activity lengths")
             return 0.0
         
-        # Calculate accuracy
-        correct = sum(1 for pred, true in zip(predictions, true_activities) if pred == true)
-        accuracy = correct / len(predictions)
-        
-        # Create confusion matrix
-        from sklearn.metrics import confusion_matrix, classification_report
-        
-        # Create confusion matrix
-        cm = confusion_matrix(true_activities, predictions, labels=activity_labels)
+        from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix
+
+        # Calculate metrics
+        accuracy = accuracy_score(true_activities, predictions)
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            true_activities, predictions, average='weighted', zero_division=0
+        )
+
+        # Per-class metrics
+        precision_per_class, recall_per_class, f1_per_class, support = \
+            precision_recall_fscore_support(
+                true_activities, predictions, labels=activity_labels, zero_division=0
+            )
+
+        # Confusion matrix
+        conf_matrix = confusion_matrix(true_activities, predictions, labels=activity_labels)
+
+        # Per-class accuracy
+        per_class_metrics = {}
+        for i, activity in enumerate(activity_labels):
+            per_class_metrics[activity] = {
+                'precision': float(precision_per_class[i]),
+                'recall': float(recall_per_class[i]),
+                'f1': float(f1_per_class[i]),
+                'support': int(support[i])
+            }
         
         # Create visualization
         plt.figure(figsize=(12, 10))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+        sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', 
                    xticklabels=activity_labels, yticklabels=activity_labels)
         plt.title('Activity Prediction Confusion Matrix')
         plt.xlabel('Predicted Activity')
@@ -1474,7 +1495,17 @@ class SensorEncoderEvaluator:
         
         # Print classification report
         print("\nClassification Report:")
-        print(classification_report(true_activities, predictions, labels=activity_labels))
+        print(classification_report(true_activities, predictions, labels=activity_labels, zero_division=0))
         
-        return accuracy
-        
+        return {
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+            'confusion_matrix': conf_matrix.tolist(),
+            'per_class_metrics': per_class_metrics,
+            'activity_labels': activity_labels,
+            'total_samples': len(predictions),
+            'predictions': predictions,
+            'true_activities': true_activities
+        }
