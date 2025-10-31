@@ -463,8 +463,10 @@ class TextEncoderTrainer:
         
         print(f"\nUsing {self.config.source_dataset} train and val splits\n")
 
-        train_dataset = prepare_training_data(interpretations_file, splits=['train'])
-        val_dataset = prepare_training_data(interpretations_file, splits=['val'])
+        train_dataset = prepare_training_data(interpretations_file, splits=['train'], 
+                                            dataset_name=self.config.source_dataset)
+        val_dataset = prepare_training_data(interpretations_file, splits=['val'], 
+                                         dataset_name=self.config.source_dataset)
         
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
@@ -614,11 +616,16 @@ class TextEncoderTrainer:
 
 
 class InterpretationDataset(Dataset):
-    """Dataset for semantic interpretations"""
+    """Dataset for semantic interpretations with cross-domain activity support"""
     
     def __init__(self, sensor_interpretations: List[str], 
                  activity_interpretations: List[str],
-                 activities: List[str]):
+                 activities: List[str],
+                 dataset_name: str = None,
+                 activity_manager=None):
+        # Import here to avoid circular imports
+        from utils.activity_label_manager import activity_manager as default_manager
+        
         # Filter out None values
         valid_indices = []
         for i, (sensor, activity) in enumerate(zip(sensor_interpretations, activity_interpretations)):
@@ -628,46 +635,94 @@ class InterpretationDataset(Dataset):
         self.sensor_interpretations = [sensor_interpretations[i] for i in valid_indices]
         self.activity_interpretations = [activity_interpretations[i] for i in valid_indices]
         self.activities = [activities[i] for i in valid_indices]
+        self.dataset_name = dataset_name
+        self.activity_manager = activity_manager or default_manager
         
-        # Activity to category mapping
-        self.activity_categories = {
-            'Sleeping': 0,
-            'Toileting': 1, 
-            'Showering': 1,
-            'Breakfast': 2,
-            'Lunch': 2,
-            'Dinner': 2,
-            'Grooming': 1,
-            'Spare_Time/TV': 3,
-            'Leaving': 4,
-            'Snack': 3
-        }
+        # Build unified activity mappings
+        self._build_unified_mappings()
+    
+    def _build_unified_mappings(self):
+        """Build unified activity mappings using ActivityLabelManager"""
+        # Get unique activities in this dataset
+        unique_activities = list(set(self.activities))
         
-        # Activity to index mapping
-        # True labels: Leaving, Toileting, Showering, Sleeping, Breakfast, Lunch, Dinner, Snack, Spare_Time/TV, Grooming
-        self.activity_to_idx = {
-            'Sleeping': 0,
-            'Toileting': 1,
-            'Showering': 2,
-            'Breakfast': 3,
-            'Lunch': 4,
-            'Dinner': 5,
-            'Grooming': 6,
-            'Spare_Time/TV': 7,
-            'Leaving': 8,
-            'Snack': 9
-        }
+        # Map each activity to unified label
+        self.activity_to_unified = {}
+        self.activity_to_idx = {}
+        self.activity_categories = {}
+        
+        # Create category to index mapping
+        category_to_idx = {}
+        category_idx = 0
+        
+        # Track unmapped activities
+        unmapped_activities = []
+        
+        for activity in unique_activities:
+            if self.dataset_name:
+                unified_label = self.activity_manager.map_to_unified(activity, self.dataset_name)
+                if unified_label:
+                    self.activity_to_unified[activity] = unified_label
+                    self.activity_to_idx[activity] = self.activity_manager.get_unified_index(unified_label)
+                    category = self.activity_manager.get_category(unified_label)
+                    
+                    # Convert category to index
+                    if category not in category_to_idx:
+                        category_to_idx[category] = category_idx
+                        category_idx += 1
+                    self.activity_categories[activity] = category_to_idx[category]
+                else:
+                    unmapped_activities.append(activity)
+                    # Use fallback mapping
+                    self.activity_to_unified[activity] = 'unknown'
+                    self.activity_to_idx[activity] = len(self.activity_manager.get_unified_activities())
+                    
+                    # Add unknown category
+                    if 'unknown' not in category_to_idx:
+                        category_to_idx['unknown'] = category_idx
+                        category_idx += 1
+                    self.activity_categories[activity] = category_to_idx['unknown']
+            else:
+                # Fallback to original mapping if no dataset specified
+                self.activity_to_unified[activity] = activity
+                self.activity_to_idx[activity] = len(self.activity_to_idx)
+                
+                # Add unknown category
+                if 'unknown' not in category_to_idx:
+                    category_to_idx['unknown'] = category_idx
+                    category_idx += 1
+                self.activity_categories[activity] = category_to_idx['unknown']
+        
+        if unmapped_activities:
+            print(f"Warning: Found unmapped activities in {self.dataset_name}: {unmapped_activities}")
+            print("Consider adding these activities to the activity mapping configuration.")
     
     def __len__(self):
         return len(self.sensor_interpretations)
     
     def __getitem__(self, idx):
+        activity = self.activities[idx]
         return {
             'sensor_interpretation': self.sensor_interpretations[idx],
             'activity_interpretation': self.activity_interpretations[idx],
-            'activity': self.activities[idx],
-            'activity_category': self.activity_categories.get(self.activities[idx], 0),
-            'activity_idx': self.activity_to_idx.get(self.activities[idx], 0)
+            'activity': activity,
+            'unified_activity': self.activity_to_unified.get(activity, 'unknown'),
+            'activity_category': torch.tensor(self.activity_categories.get(activity, 'unknown'), dtype=torch.long),
+            'activity_idx': torch.tensor(self.activity_to_idx.get(activity, 0), dtype=torch.long)
+        }
+    
+    def get_unified_vocab_size(self) -> int:
+        """Get the size of unified vocabulary"""
+        return len(self.activity_manager.get_unified_activities()) + 1  # +1 for unknown
+    
+    def get_activity_mapping_info(self) -> Dict:
+        """Get activity mapping information for debugging"""
+        return {
+            'dataset_name': self.dataset_name,
+            'unique_activities': list(set(self.activities)),
+            'activity_to_unified': self.activity_to_unified,
+            'activity_to_idx': self.activity_to_idx,
+            'unified_vocab_size': self.get_unified_vocab_size()
         }
 
 
@@ -714,12 +769,14 @@ def load_interpretations_from_json(json_file: str) -> Tuple[List[Dict], Dict[str
     return sensor_interpretations, activity_interpretations
 
 
-def prepare_training_data(interpretations_file: str, splits: List[str] = ['train']) -> InterpretationDataset:
+def prepare_training_data(interpretations_file: str, splits: List[str] = ['train'], 
+                         dataset_name: str = None) -> InterpretationDataset:
     """Prepare training data for specific splits (train/val/test)
     
     Args:
         interpretations_file: Path to JSON file
         splits: List of splits to include (e.g., ['train'], ['val'])
+        dataset_name: Name of the dataset for activity mapping
     """
     print(f"Loading interpretations from: {interpretations_file} for splits: {splits}")
     
@@ -760,7 +817,8 @@ def prepare_training_data(interpretations_file: str, splits: List[str] = ['train
     return InterpretationDataset(
         sensor_interpretations=sensor_interpretations,
         activity_interpretations=matched_activity_interpretations,
-        activities=activities
+        activities=activities,
+        dataset_name=dataset_name
     )
 
 
@@ -1390,8 +1448,9 @@ class TextEncoderEvaluator:
             
             print(f"  ✓ Activity similarity heatmap saved: {save_path}")
     
-    def comprehensive_evaluation(self, interpretations_file: str, output_dir: str = "outputs") -> Dict:
-        """Comprehensive evaluation"""
+    def comprehensive_evaluation(self, interpretations_file: str, output_dir: str = "outputs", 
+                               dataset_name: str = None) -> Dict:
+        """Comprehensive evaluation with cross-domain support"""
 
         # Data loading
         with open(interpretations_file, 'r', encoding='utf-8') as f:
@@ -1402,6 +1461,7 @@ class TextEncoderEvaluator:
         activities = []
         
         print(f"✓ Using {self.config.source_dataset} val split for evaluation")
+        dataset_name = dataset_name or self.config.source_dataset
 
         if data['sensor_interpretations']['val']:
             for _, window_data in data['sensor_interpretations']['val'].items():

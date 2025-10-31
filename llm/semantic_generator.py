@@ -26,7 +26,7 @@ class SemanticGenerator:
     def __init__(self, config: SemanticHARConfig):
         self.config = config
         openai.api_key = os.getenv("OPENAI_API_KEY")
-        
+
         # Semantic interpretations repository
         self.sensor_interpretations = {}
         self.activity_interpretations = {}
@@ -36,11 +36,10 @@ class SemanticGenerator:
         from config import OPENAI_API_KEY
         print(f"  - OpenAI API: {'✓' if OPENAI_API_KEY else '✗'}")
     
-
-    def generate_sensor_interpretation(self, window_data: Dict) -> str:
+    def generate_sensor_interpretation(self, window_data: Dict, activity_label: List) -> str:
         """Generate semantic interpretations for sensor data"""
         
-        system_prompt, user_prompt = self._create_sensor_prompt(window_data)
+        system_prompt, user_prompt = self._create_sensor_prompt(window_data, activity_label)
         try:
             client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             response = client.chat.completions.create(
@@ -60,7 +59,6 @@ class SemanticGenerator:
             print(f"LLM call error: {e}")
             return None
     
-
     def generate_activity_interpretation(self, activity: str) -> str:
         """Generate semantic interpretations for activity labels"""
         
@@ -85,7 +83,6 @@ class SemanticGenerator:
             print(f"LLM call error: {e}")
             return None
 
-
     def generate_interpretations(self, config: SemanticHARConfig) -> str:
         """
         Generate semantic interpretations
@@ -100,6 +97,7 @@ class SemanticGenerator:
         
         # Load windows data
         windows_file = config.windows_file
+        
         if not os.path.exists(windows_file):
             print(f"✗ Windows file not found: {windows_file}")
             print(f"  Please run 'python main.py --mode train' first to generate the windows")
@@ -108,12 +106,17 @@ class SemanticGenerator:
         with open(windows_file, 'r', encoding='utf-8') as f:
             windows_data = json.load(f)
         
+        source_activity_label = windows_data['generation_info']['source_activity_label']
+        target_activity_label = windows_data['generation_info']['target_activity_label']
+
         # Initialize result structure
         results = {
             'generation_info': {
                 'timestamp': datetime.now().isoformat(),
                 'source_dataset': config.source_dataset,
-                'target_dataset': config.target_dataset
+                'target_dataset': config.target_dataset,
+                'source_activity_label': source_activity_label,
+                'target_activity_label': target_activity_label
             },
             'sensor_interpretations': {
                 'train': {},
@@ -136,7 +139,8 @@ class SemanticGenerator:
 
         for split in windows_data['windows']:
             print(f"\n⨠ Processing {split} split...")
-            
+
+            activity_label = source_activity_label if split in ['train', 'val'] else target_activity_label
             windows = windows_data['windows'][split]
             if len(windows) == 0:
                 print(f"    ✗  No {split} windows available")
@@ -152,7 +156,7 @@ class SemanticGenerator:
                 try:
                     window_id = window_data['window_id']
                     # Generate sensor interpretation
-                    interpretation = self.generate_sensor_interpretation(window_data)
+                    interpretation = self.generate_sensor_interpretation(window_data, activity_label)
 
                     split_results[f"window_{i+1}"] = {
                         'interpretation': interpretation,
@@ -233,7 +237,6 @@ class SemanticGenerator:
         
         return config.semantic_interpretations_file
     
-
     def load_interpretations(self, interpretations_file: str) -> Dict:
         """Load existing interpretations file"""
         
@@ -246,8 +249,7 @@ class SemanticGenerator:
         
         return data
 
-    
-    def _create_sensor_prompt(self, window_data: Dict) -> Tuple[str, str]:
+    def _create_sensor_prompt(self, window_data: Dict, activity_label: List) -> Tuple[str, str]:
         """Create prompt for ambient sensor data interpretation"""
         # Remove 'window_id' key in dictionary
         window_data.pop('window_id', None)
@@ -266,7 +268,7 @@ class SemanticGenerator:
 - Magnetic Sensors: Detect door/window openings and closings, indicating room transitions and access patterns
 - Pressure Sensors: Detect weight distribution and contact, showing seating, lying, or standing patterns
 - Flush Sensors: Detect toilet usage patterns, indicating bathroom activities
-- Electric Sensors: Detect appliance usage and power consumption, showing device interaction patterns
+- Electric/Smart Plug Sensors: Detect appliance usage and power consumption, showing device interaction patterns
 
 **Activity-Specific Knowledge**:
 {self._get_activity_knowledge(window_data['activity'])}
@@ -277,7 +279,7 @@ You will analyze sensor data using amplitude analysis, frequency analysis, time 
         # User prompt: semantic interpretation focus
         user_prompt = f"""## Data Introduction
 
-This is a {window_data['window_duration']} seconds time window of ambient sensor data from a smart home environment. The first element is the start time of window, the second element is the end time of window, the third element is the duration of window, the fourth element is the activity, the fifth element is the sensor type, the sixth element is the sensor location, the seventh element is the sensor place. The ambient sensor reading may be in one of the following states: [Sleeping, Toileting, Showering, Breakfast, Lunch, Dinner, Grooming, Spare_Time/TV, Leaving, Snack].
+This is a {window_data['window_duration']} seconds time window of ambient sensor data from a smart home environment. The first element is the start time of window, the second element is the end time of window, the third element is the duration of window, the fourth element is the activity, the fifth element is the sensor type, the sixth element is the sensor location, the seventh element is the sensor place. The ambient sensor reading may be in one of the following states: {activity_label}.
 
 ## Task Introduction: Semantic Interpretation Generation
 Generate a comprehensive semantic interpretation of the sensor data that describes the human activity patterns. Focus on:
@@ -332,7 +334,6 @@ Confidence Assessment: [Your confidence level in this interpretation (High/Mediu
      
         return system_prompt, user_prompt
     
-
     def _create_activity_prompt(self, activity: str) -> Tuple[str, str]:
         """create prompt for ambient sensor activity label interpretation"""
         
@@ -411,7 +412,6 @@ Each aspect should be described in detail and technically, focusing on how ambie
         
         return system_prompt, user_prompt
     
-
     def _get_activity_knowledge(self, activity: str) -> str:
         """Get activity-specific knowledge for system prompt"""
         activity_knowledge = {

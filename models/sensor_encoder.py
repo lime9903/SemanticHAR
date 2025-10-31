@@ -1173,9 +1173,12 @@ class SensorEncoderEvaluator:
         print(f"✓ Training curves saved: {save_path}")
     
     def comprehensive_evaluation(self, windows_file: str, interpretations_file: str, 
-                               output_dir: str = "outputs") -> Dict:
-        """Comprehensive evaluation of sensor encoder"""
+                               output_dir: str = "outputs", target_dataset: str = None) -> Dict:
+        """Comprehensive evaluation of sensor encoder with cross-domain support"""
         print("Starting comprehensive sensor encoder evaluation...")
+        
+        target_dataset = target_dataset or self.config.target_dataset
+        print(f"Using target dataset: {target_dataset}")
 
         # Create a temporary trainer instance to use its data preparation methods
         temp_trainer = SensorEncoderTrainer(self.config, self.text_encoder)
@@ -1346,9 +1349,13 @@ class SensorEncoderEvaluator:
         
         return activity_interpretations
     
-    def predict_activities(self, interpretations_file: str) -> Dict:
-        """Predict activities using sensor encoder"""
+    def predict_activities(self, interpretations_file: str, target_dataset: str = None) -> Dict:
+        """Predict activities using sensor encoder with cross-domain support"""
         print("Starting activity prediction...")
+        
+        # Use target dataset for cross-domain inference
+        target_dataset = target_dataset or self.config.target_dataset
+        print(f"Using target dataset: {target_dataset}")
         
         # Load inference data
         inference_data = self._load_inference_data(interpretations_file)
@@ -1364,13 +1371,35 @@ class SensorEncoderEvaluator:
         # Load activity interpretations
         activity_interpretations = self._load_activity_interpretations(interpretations_file)
         
+        # Cross-domain activity mapping
+        from utils.activity_label_manager import activity_manager
+        
+        # Map target dataset activities to unified labels
+        mapped_activities = {}
+        unmapped_activities = []
+        
+        for activity, interpretation in activity_interpretations.items():
+            unified_label = activity_manager.map_to_unified(activity, target_dataset)
+            if unified_label:
+                mapped_activities[unified_label] = interpretation
+            else:
+                unmapped_activities.append(activity)
+                # Use original activity as fallback
+                mapped_activities[activity] = interpretation
+        
+        if unmapped_activities:
+            print(f"Warning: Found unmapped activities in target dataset {target_dataset}: {unmapped_activities}")
+            print("Using original activity labels as fallback.")
+        
         # Get activity embeddings from text encoder
-        activity_labels = list(activity_interpretations.keys())
-        activity_texts = list(activity_interpretations.values())
+        activity_labels = list(mapped_activities.keys())
+        activity_texts = list(mapped_activities.values())
         
         if not activity_texts:
             print("✗ No activity interpretations found")
             return {'predictions': [], 'accuracy': 0.0}
+        
+        print(f"Using {len(activity_labels)} activity labels for prediction")
         
         # Get activity embeddings
         with torch.no_grad():
@@ -1380,9 +1409,23 @@ class SensorEncoderEvaluator:
         # Predict activities
         predictions = self._predict_batch(sensor_events_list, activity_embeddings, activity_labels)
         
+        # Map predictions back to original activity labels if needed
+        if unmapped_activities:
+            # Keep original predictions for unmapped activities
+            pass
+        
         # Evaluate predictions if true labels are available
         if true_activities:
-            evaluation_results = self._evaluate_predictions(predictions, true_activities, activity_labels)
+            # Map true activities to unified labels for evaluation
+            mapped_true_activities = []
+            for activity in true_activities:
+                unified_label = activity_manager.map_to_unified(activity, target_dataset)
+                if unified_label:
+                    mapped_true_activities.append(unified_label)
+                else:
+                    mapped_true_activities.append(activity)  # Keep original
+            
+            evaluation_results = self._evaluate_predictions(predictions, mapped_true_activities, activity_labels)
         else:
             evaluation_results = {
                 'accuracy': 0.0,
@@ -1394,7 +1437,9 @@ class SensorEncoderEvaluator:
                 'activity_labels': activity_labels,
                 'total_samples': len(sensor_events_list),
                 'predictions': predictions,
-                'true_activities': true_activities
+                'true_activities': true_activities,
+                'target_dataset': target_dataset,
+                'unmapped_activities': unmapped_activities
             }
         
         # Save to file

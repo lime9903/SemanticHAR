@@ -170,6 +170,8 @@ class SensorDataset:
                                     if label_row['ts_start'] <= timestamp <= label_row['ts_end']:
                                         # Map activity name to ID
                                         activity_name = label_row['act'].capitalize()
+                                        if activity_name == 'Transition':
+                                            activity_name = 'Unknown'
                                         break
 
                                 # Find corresponding location
@@ -208,6 +210,13 @@ class SensorDataset:
             all_sensor_data = pd.DataFrame(all_sensor_data)
             all_sensor_data = all_sensor_data.sort_values('timestamp', ignore_index=True)
             all_sensor_data['timestamp'] = pd.to_datetime(all_sensor_data['timestamp'], unit='ms')
+            
+            # Remove rows with 'Unknown' activity
+            all_sensor_data = all_sensor_data[all_sensor_data['activity'] != 'Unknown'].copy()
+            
+            if len(all_sensor_data) == 0:
+                print("✗ No valid data found after removing Unknown activities")
+                return np.array([]), np.array([]), []
             
             # Calculate sensor duration based on ON/OFF status
             all_sensor_data = self._calculate_sensor_durations(all_sensor_data)
@@ -452,7 +461,7 @@ def load_sensor_data(config: SemanticHARConfig, use_event_based: bool = True) ->
     """Load sensor data as DataFrames and split with event-based or time-based windows"""
 
     dataset_loader = SensorDataset(config)
-    source_sensor_data, _, _, target_sensor_data, _, _ = dataset_loader.get_data()
+    source_sensor_data, _, source_activity_name, target_sensor_data, _, target_activity_name = dataset_loader.get_data()
 
     split_data = {
         'train': {},
@@ -519,7 +528,7 @@ def load_sensor_data(config: SemanticHARConfig, use_event_based: bool = True) ->
     print("-" * 64 + "\n")
 
     # Save windows to JSON
-    _save_windows(split_data, config, use_event_based)
+    _save_windows(split_data, source_activity_name, target_activity_name, config, use_event_based)
     
     return split_data
 
@@ -654,7 +663,7 @@ def _create_time_based_windows(df: pd.DataFrame, window_size_seconds: int, overl
     return windows
 
 
-def _save_windows(split_data: Dict, config, use_event_based: bool = True) -> str:
+def _save_windows(split_data: Dict, source_activity_name: List, target_activity_name: List, config, use_event_based: bool = True) -> str:
     """Save windows to JSON file"""
     
     # Base generation info
@@ -662,8 +671,10 @@ def _save_windows(split_data: Dict, config, use_event_based: bool = True) -> str
         'timestamp': datetime.now().isoformat(),
         'source_dataset': config.source_dataset,
         'target_dataset': config.target_dataset,
+        'source_activity_label': source_activity_name,
+        'target_activity_label': target_activity_name
     }
-    
+
     # Add generation information for each generation strategy
     if not use_event_based:
         generation_info['window_size_seconds'] = config.window_size_seconds

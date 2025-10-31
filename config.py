@@ -9,7 +9,7 @@ from dataclasses import dataclass
 class SemanticHARConfig:
     # Environment
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    use_evaluation: bool = False
+    use_evaluation: bool = True
     
     # Directory Path
     root_dir: str = "/workspace/semantic"

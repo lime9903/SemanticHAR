@@ -1,0 +1,114 @@
+{
+  "version": "1.0",
+  "description": "Cross-domain activity mapping for HAR datasets",
+  "mappings": [
+    {
+      "unified_label": "sleeping",
+      "category": "rest",
+      "description": "Sleeping or resting activities",
+      "dataset_labels": {
+        "UCI_ADL_home_a": [
+          "Sleeping"
+        ],
+        "UCI_ADL_home_b": [
+          "Sleeping"
+        ],
+        "MARBLE": []
+      }
+    },
+    {
+      "unified_label": "personal_care",
+      "category": "hygiene",
+      "description": "Personal hygiene and care activities",
+      "dataset_labels": {
+        "UCI_ADL_home_a": [
+          "Toileting",
+          "Showering",
+          "Grooming"
+        ],
+        "UCI_ADL_home_b": [
+          "Toileting",
+          "Showering",
+          "Grooming"
+        ],
+        "MARBLE": [
+          "Washing_dishes",
+          "Taking_medicines"
+        ]
+      }
+    },
+    {
+      "unified_label": "eating",
+      "category": "nutrition",
+      "description": "Food preparation and consumption activities",
+      "dataset_labels": {
+        "UCI_ADL_home_a": [
+          "Breakfast",
+          "Lunch",
+          "Dinner",
+          "Snack"
+        ],
+        "UCI_ADL_home_b": [
+          "Breakfast",
+          "Lunch",
+          "Dinner",
+          "Snack"
+        ],
+        "MARBLE": [
+          "Eating",
+          "Preparing_cold_meal",
+          "Cooking",
+          "Setting_up_table",
+          "Clearing_table"
+        ]
+      }
+    },
+    {
+      "unified_label": "leisure",
+      "category": "entertainment",
+      "description": "Leisure and entertainment activities",
+      "dataset_labels": {
+        "UCI_ADL_home_a": [
+          "Spare_Time/TV"
+        ],
+        "UCI_ADL_home_b": [
+          "Spare_Time/TV"
+        ],
+        "MARBLE": [
+          "Watching_tv",
+          "Using_pc"
+        ]
+      }
+    },
+    {
+      "unified_label": "mobility",
+      "category": "movement",
+      "description": "Movement and transportation activities",
+      "dataset_labels": {
+        "UCI_ADL_home_a": [
+          "Leaving"
+        ],
+        "UCI_ADL_home_b": [
+          "Leaving"
+        ],
+        "MARBLE": [
+          "Leaving_home",
+          "Entering_home"
+        ]
+      }
+    },
+    {
+      "unified_label": "communication",
+      "category": "social",
+      "description": "Communication and social activities",
+      "dataset_labels": {
+        "UCI_ADL_home_a": [],
+        "UCI_ADL_home_b": [],
+        "MARBLE": [
+          "Answering_phone",
+          "Making_phone_call"
+        ]
+      }
+    }
+  ]
+}

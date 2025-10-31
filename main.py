@@ -202,7 +202,10 @@ def train_lanhar(config: SemanticHARConfig):
 
         try:
             evaluator = TextEncoderEvaluator(config, text_encoder=text_encoder, text_decoder=text_decoder)
-            evaluation_results = evaluator.comprehensive_evaluation(config.semantic_interpretations_file)
+            evaluation_results = evaluator.comprehensive_evaluation(
+                config.semantic_interpretations_file, 
+                dataset_name=config.source_dataset
+            )
 
         except Exception as e:
             print(f"✗ Error during text encoder evaluation: {e}")
@@ -269,7 +272,11 @@ def train_lanhar(config: SemanticHARConfig):
             
             try:
                 sensor_evaluator = SensorEncoderEvaluator(config, sensor_encoder, text_encoder)
-                sensor_evaluation_results = sensor_evaluator.comprehensive_evaluation(config.windows_file, config.semantic_interpretations_file)
+                sensor_evaluation_results = sensor_evaluator.comprehensive_evaluation(
+                    config.windows_file, 
+                    config.semantic_interpretations_file,
+                    target_dataset=config.target_dataset
+                )
                 
                 if sensor_evaluation_results:
                     print("✓ Sensor encoder evaluated successfully!")
@@ -360,7 +367,10 @@ def main():
                 interpretations_file = config.semantic_interpretations_file
                 
                 if os.path.exists(interpretations_file):
-                    inference_results = sensor_evaluator.predict_activities(interpretations_file)
+                    inference_results = sensor_evaluator.predict_activities(
+                        interpretations_file, 
+                        target_dataset=config.target_dataset
+                    )
                     
                     if inference_results:
                         print("\n✓ Inference successful!")
@@ -437,7 +447,10 @@ def main():
             
             # Run inference
             sensor_evaluator = SensorEncoderEvaluator(config, sensor_encoder, text_encoder)
-            inference_results = sensor_evaluator.predict_activities(interpretations_file)
+            inference_results = sensor_evaluator.predict_activities(
+                interpretations_file, 
+                target_dataset=config.target_dataset
+            )
             
             if inference_results:
                 print("\n✓ Inference successful!")
@@ -481,3 +494,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+ 
