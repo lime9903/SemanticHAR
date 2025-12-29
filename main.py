@@ -9,7 +9,8 @@ import json
 import torch
 
 # Add project root to Python path
-sys.path.append('/workspace/semantic')
+# sys.path.append('/workspace/semantic')
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import SemanticHARConfig, OPENAI_API_KEY
 from dataloader.data_loader import load_sensor_data

@@ -11,7 +11,7 @@ from tqdm import tqdm
 import json
 from datetime import datetime
 
-sys.path.append('/workspace/semantic')
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import SemanticHARConfig
 
 def parse_datetime(series):
@@ -40,28 +40,31 @@ class SensorDataset:
         self.overlap = config.overlap_ratio
         
         self.source_sensor_data, self.source_activity_label, self.source_activity_name, self.target_sensor_data, self.target_activity_label, self.target_activity_name = self._load_data()
-
     
     def _load_data(self) -> Tuple[Tuple[List[pd.DataFrame], List[str], List[str]], Tuple[List[pd.DataFrame], List[str], List[str]]]:
         """Data loading"""
 
         # Source data loading
-        if self.source_dataset == "MARBLE":
-            source_sensor_data, source_activity_label, source_activity_name = self._load_marble_data()
-        elif self.source_dataset.startswith("UCI_ADL"):
-            source_sensor_data, source_activity_label, source_activity_name = self._load_uci_adl_data(self.source_dataset)
-        else:
-            raise ValueError(f"✗ Unsupported dataset: {self.source_dataset}")
+        source_sensor_data, source_activity_label, source_activity_name = self._load_dataset(self.source_dataset)
 
         # Target data loading
-        if self.target_dataset == "MARBLE":
-            target_sensor_data, target_activity_label, target_activity_name = self._load_marble_data()
-        elif self.target_dataset.startswith("UCI_ADL"):
-            target_sensor_data, target_activity_label, target_activity_name = self._load_uci_adl_data(self.target_dataset)
-        else:
-            raise ValueError(f"✗ Unsupported dataset: {self.target_dataset}")
+        target_sensor_data, target_activity_label, target_activity_name = self._load_dataset(self.target_dataset)
         
         return source_sensor_data, source_activity_label, source_activity_name, target_sensor_data, target_activity_label, target_activity_name
+    
+    def _load_dataset(self, dataset_name: str) -> Tuple[pd.DataFrame, np.ndarray, List[str]]:
+        """Load dataset by name"""
+        dataset_name = dataset_name.lower()
+        print(f"Loading dataset: {dataset_name}")
+        
+        if dataset_name == "marble":
+            return self._load_marble_data()
+        elif dataset_name.startswith("uci_adl"):
+            return self._load_uci_adl_data(dataset_name)
+        elif dataset_name.startswith("casas"):
+            return self._load_casas_data(dataset_name)
+        else:
+            raise ValueError(f"✗ Unsupported dataset: {dataset_name}")
     
     def _load_marble_data(self) -> Tuple[np.ndarray, np.ndarray, List[str]]:
         """MARBLE Dataset loading - Environmental sensors only"""
@@ -288,16 +291,17 @@ class SensorDataset:
         
         return df_filtered
     
-    def _load_uci_adl_data(self, dataset_name: str = "UCI_ADL_home_a") -> Tuple[List[pd.DataFrame], List[str], List[str]]:
+    def _load_uci_adl_data(self, dataset_name: str = "uci_adl_home_a") -> Tuple[List[pd.DataFrame], List[str], List[str]]:
         """UCI ADL Dataset loading"""
         activity_label = None
         activity_name = None
         data_path = self.config.uci_adl_data_path
 
-        # Determine which dataset to load based on dataset_name
-        if dataset_name == "UCI_ADL_home_a":
+        # Determine which dataset to load based on dataset_name (lowercase comparison)
+        dataset_name_lower = dataset_name.lower()
+        if dataset_name_lower == "uci_adl_home_a":
             adl_file = 'OrdonezA_ADLs.txt'
-        elif dataset_name == "UCI_ADL_home_b":
+        elif dataset_name_lower == "uci_adl_home_b":
             adl_file = 'OrdonezB_ADLs.txt'
         else:
             raise ValueError(f"✗ Unsupported dataset: {dataset_name}")
@@ -453,6 +457,276 @@ class SensorDataset:
         except Exception as e:
             print(f"Error loading sensor file {sensor_path}: {e}")
             return None
+    
+    def _load_casas_data(self, dataset_name: str) -> Tuple[pd.DataFrame, np.ndarray, List[str]]:
+        """Load CASAS Dataset (aruba, cairo, kyoto, milan)"""
+        
+        # CASAS sensor location mapping (based on typical smart home layouts)
+        # Sensor types: M = Motion, D = Door, T = Temperature, AD = Analog
+        casas_sensor_type_mapping = {
+            'M': 'Motion',
+            'D': 'Door',
+            'T': 'Temperature',
+            'AD': 'Analog'
+        }
+        
+        # Determine dataset path and file
+        dataset_name = dataset_name.lower()
+        if dataset_name == "casas_aruba":
+            data_path = self.config.casas_aruba_data_path
+            data_file = "aruba.txt"
+        elif dataset_name == "casas_cairo":
+            data_path = self.config.casas_cairo_data_path
+            data_file = "cairo.txt"
+        elif dataset_name == "casas_kyoto":
+            data_path = self.config.casas_kyoto_data_path
+            data_file = "kyoto7.txt"
+        elif dataset_name == "casas_milan":
+            data_path = self.config.casas_milan_data_path
+            data_file = "milan.txt"
+        else:
+            raise ValueError(f"✗ Unsupported CASAS dataset: {dataset_name}")
+        
+        file_path = os.path.join(data_path, data_file)
+        
+        if not os.path.exists(file_path):
+            print(f"✗ CASAS data file not found: {file_path}")
+            return pd.DataFrame(), np.array([]), []
+        
+        print(f"\nProcessing CASAS dataset: {dataset_name} from {file_path}")
+        
+        try:
+            all_sensor_data = []
+            current_activity = None
+            activity_start_time = None
+            
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            print(f"  Loading {len(lines)} lines...")
+            
+            for line in tqdm(lines, desc=f"  Parsing {dataset_name}", leave=False):
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Parse line based on dataset format
+                parsed = self._parse_casas_line(line, dataset_name)
+                if parsed is None:
+                    continue
+                
+                timestamp, sensor_id, sensor_status, activity_info = parsed
+                
+                # Handle activity begin/end annotations
+                if activity_info:
+                    if 'begin' in activity_info.lower():
+                        # Extract activity name (remove 'begin' suffix)
+                        activity_name = activity_info.replace('begin', '').replace('Begin', '').strip()
+                        # Clean up activity name (remove R1_, R2_ prefixes if present)
+                        activity_name = self._clean_activity_name(activity_name)
+                        current_activity = activity_name
+                        activity_start_time = timestamp
+                    elif 'end' in activity_info.lower():
+                        current_activity = None
+                        activity_start_time = None
+                
+                # Determine sensor type based on prefix
+                sensor_type = 'Unknown'
+                for prefix, type_name in casas_sensor_type_mapping.items():
+                    if sensor_id.startswith(prefix):
+                        sensor_type = type_name
+                        break
+                
+                # Only include sensor events with known activity
+                if current_activity and sensor_status in ['ON', 'OFF', 'OPEN', 'CLOSE']:
+                    sensor_data = {
+                        'timestamp': timestamp,
+                        'sensor_id': sensor_id,
+                        'sensor_location': sensor_id,  # Use sensor ID as location
+                        'sensor_type': sensor_type,
+                        'sensor_place': self._infer_sensor_place(sensor_id, dataset_name),
+                        'sensor_status': sensor_status,
+                        'activity': current_activity,
+                        'sensor_duration': 0  # Will be calculated later
+                    }
+                    all_sensor_data.append(sensor_data)
+            
+            if len(all_sensor_data) == 0:
+                print(f"  ✗ No valid sensor data found in {dataset_name}")
+                return pd.DataFrame(), np.array([]), []
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(all_sensor_data)
+            
+            # Calculate sensor durations
+            df = self._calculate_casas_sensor_durations(df)
+            
+            # Extract activity labels
+            activity_label = np.array(df['activity'])
+            activity_name = df['activity'].unique().tolist()
+            
+            print(f"\n✓ Created CASAS {dataset_name} dataset with {len(df)} sensor-activity pairs")
+            print(f"  Sensor data sample:\n{df.head(3)}")
+            print(f"  Activity names ({len(activity_name)}): {activity_name}")
+            
+            return df, activity_label, activity_name
+            
+        except Exception as e:
+            print(f"✗ Error loading CASAS data {dataset_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            return pd.DataFrame(), np.array([]), []
+    
+    def _parse_casas_line(self, line: str, dataset_name: str) -> Optional[Tuple]:
+        """Parse a single line from CASAS dataset"""
+        try:
+            # Different parsing for different CASAS datasets (lowercase comparison)
+            dataset_name_lower = dataset_name.lower()
+            if dataset_name_lower == "casas_aruba":
+                # Format: 2010-11-04 00:03:50.209589 M003 ON Sleeping begin
+                # Space-separated
+                parts = line.split()
+                if len(parts) < 4:
+                    return None
+                
+                date_str = parts[0]
+                time_str = parts[1]
+                sensor_id = parts[2]
+                sensor_status = parts[3]
+                
+                # Activity info (if present)
+                activity_info = ' '.join(parts[4:]) if len(parts) > 4 else None
+                
+                timestamp = pd.to_datetime(f"{date_str} {time_str}", errors='coerce')
+                
+            elif dataset_name_lower == "casas_kyoto":
+                # Format: 2009-02-02	07:15:16.575809	M35	ON	R1_Bed_to_Toilet begin
+                # Tab-separated with separate date and time
+                parts = line.split('\t')
+                if len(parts) < 4:
+                    return None
+                
+                date_str = parts[0].strip()
+                time_str = parts[1].strip()
+                sensor_id = parts[2].strip()
+                sensor_status = parts[3].strip()
+                
+                # Activity info (if present)
+                activity_info = parts[4].strip() if len(parts) > 4 else None
+                
+                timestamp = pd.to_datetime(f"{date_str} {time_str}", errors='coerce')
+                
+            else:  # cairo, milan
+                # Format: 2009-06-10 00:00:00.024668	T003	19
+                # or: 2009-10-16 00:01:04.000059	M017	ON
+                # Tab-separated with combined date-time
+                parts = line.split('\t')
+                if len(parts) < 3:
+                    return None
+                
+                datetime_str = parts[0].strip()
+                sensor_id = parts[1].strip()
+                sensor_status = parts[2].strip()
+                
+                # Activity info (if present)
+                activity_info = parts[3].strip() if len(parts) > 3 else None
+                
+                timestamp = pd.to_datetime(datetime_str, errors='coerce')
+            
+            if pd.isna(timestamp):
+                return None
+            
+            return timestamp, sensor_id, sensor_status, activity_info
+            
+        except Exception as e:
+            return None
+    
+    def _clean_activity_name(self, activity_name: str) -> str:
+        """Clean activity name by removing prefixes and standardizing format"""
+        # Remove R1_, R2_ prefixes (for multi-resident datasets like kyoto)
+        import re
+        activity_name = re.sub(r'^R\d+[_\s]*', '', activity_name)
+        
+        # Replace underscores with spaces
+        activity_name = activity_name.replace('_', ' ')
+        
+        # Capitalize first letter
+        activity_name = activity_name.strip().capitalize()
+        
+        return activity_name
+    
+    def _infer_sensor_place(self, sensor_id: str, dataset_name: str) -> str:
+        """Infer sensor place based on sensor ID and dataset"""
+        # This is a simplified mapping - in practice, you'd want to use
+        # the actual floor plan information from each dataset
+        
+        # Common room types based on sensor ID patterns
+        if sensor_id.startswith('M'):
+            return 'Room'  # Motion sensor - generic room
+        elif sensor_id.startswith('D'):
+            return 'Door'  # Door sensor
+        elif sensor_id.startswith('T'):
+            return 'Room'  # Temperature sensor
+        elif sensor_id.startswith('AD'):
+            return 'Room'  # Analog sensor
+        else:
+            return 'Unknown'
+    
+    def _calculate_casas_sensor_durations(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate sensor duration based on ON/OFF status changes for CASAS data"""
+        
+        df['duration'] = 0.0
+        
+        # Group by sensor_id to track state changes per sensor
+        grouped = df.groupby('sensor_id')
+        
+        for sensor_id, group in grouped:
+            if len(group) < 2:
+                continue
+            
+            # Sort by timestamp
+            group_sorted = group.sort_values('timestamp')
+            
+            # Track ON/OFF state changes
+            current_state = None
+            on_timestamp = None
+            on_event_idx = None
+            
+            for idx, row in group_sorted.iterrows():
+                status = row['sensor_status']
+                
+                if status in ['ON', 'OPEN'] and current_state not in ['ON', 'OPEN']:
+                    # Sensor turned ON/OPEN
+                    on_timestamp = row['timestamp']
+                    on_event_idx = idx
+                    current_state = status
+                    
+                elif status in ['OFF', 'CLOSE'] and current_state in ['ON', 'OPEN']:
+                    # Sensor turned OFF/CLOSE - calculate duration
+                    if on_timestamp is not None and on_event_idx is not None:
+                        duration_seconds = (row['timestamp'] - on_timestamp).total_seconds()
+                        
+                        # Update duration only for the ON event
+                        df.loc[on_event_idx, 'duration'] = duration_seconds
+                    
+                    current_state = status
+                    on_timestamp = None
+                    on_event_idx = None
+                    
+                elif status in ['OFF', 'CLOSE'] and current_state not in ['ON', 'OPEN']:
+                    # Sensor was already OFF/CLOSE
+                    current_state = status
+                    on_timestamp = None
+                    on_event_idx = None
+        
+        # Update sensor_duration column
+        df['sensor_duration'] = df['duration']
+        
+        # Keep only ON/OPEN events with calculated duration
+        df_filtered = df[(df['sensor_status'].isin(['ON', 'OPEN'])) & (df['duration'] >= 0)].copy()
+        df_filtered = df_filtered.drop('duration', axis=1)
+        
+        return df_filtered
     
     def get_data(self):
         return self.source_sensor_data, self.source_activity_label, self.source_activity_name, self.target_sensor_data, self.target_activity_label, self.target_activity_name

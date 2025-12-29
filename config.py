@@ -12,14 +12,18 @@ class SemanticHARConfig:
     use_evaluation: bool = True
     
     # Directory Path
-    root_dir: str = "/workspace/semantic"
+    root_dir: str = os.path.dirname(os.path.abspath(__file__))
     data_dir: str = os.path.join(root_dir, "data")  # TODO: You need to download the dataset and put it in this directory
     output_dir: str = os.path.join(root_dir, "outputs")
     model_dir: str = os.path.join(root_dir, "checkpoints")
     
     # Data Path
-    marble_data_path: str = os.path.join(data_dir, "MARBLE")
-    uci_adl_data_path: str = os.path.join(data_dir, "UCI ADL Binary Dataset")
+    marble_data_path: str = os.path.join(data_dir, "marble")
+    uci_adl_data_path: str = os.path.join(data_dir, "uci_adl")
+    casas_aruba_data_path: str = os.path.join(data_dir, "casas_aruba")
+    casas_cairo_data_path: str = os.path.join(data_dir, "casas_cairo")
+    casas_kyoto_data_path: str = os.path.join(data_dir, "casas_kyoto7")
+    casas_milan_data_path: str = os.path.join(data_dir, "casas_milan")
     windows_file: str = os.path.join(output_dir, "windows.json")
     semantic_interpretations_file: str = os.path.join(output_dir, "semantic_interpretations.json")
     matched_windows_file: str = os.path.join(output_dir, "matched_windows.json")
@@ -30,8 +34,8 @@ class SemanticHARConfig:
     use_event_based: bool = True
     use_multi_user: bool = False
     use_multi_modal: bool = False
-    source_dataset: str = "UCI_ADL_home_b"  # TODO: choices (UCI_ADL_home_a, UCI_ADL_home_b, MARBLE)
-    target_dataset: str = "MARBLE"
+    source_dataset: str = "uci_adl_home_a"  # choices: uci_adl_home_a, uci_adl_home_b, marble, casas_aruba, casas_cairo, casas_kyoto, casas_milan
+    target_dataset: str = "casas_aruba"  # choices: uci_adl_home_a, uci_adl_home_b, marble, casas_aruba, casas_cairo, casas_kyoto, casas_milan
     source_train_ratio: float = 0.8  # 80% for train, 20% for val
     
     # LLM
