@@ -63,6 +63,5 @@ Thumbs.db
 *.rar
 *.csv
 
-# Output files
-outputs/
+# Data files (large datasets)
 data/
