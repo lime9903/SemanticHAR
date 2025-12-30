@@ -539,12 +539,15 @@ class SensorDataset:
                 
                 # Only include sensor events with known activity
                 if current_activity and sensor_status in ['ON', 'OFF', 'OPEN', 'CLOSE']:
+                    # Get sensor location and place from mapping
+                    sensor_location, sensor_place = self._get_sensor_mapping(sensor_id, dataset_name)
+                    
                     sensor_data = {
                         'timestamp': timestamp,
                         'sensor_id': sensor_id,
-                        'sensor_location': sensor_id,  # Use sensor ID as location
+                        'sensor_location': sensor_location,
                         'sensor_type': sensor_type,
-                        'sensor_place': self._infer_sensor_place(sensor_id, dataset_name),
+                        'sensor_place': sensor_place,
                         'sensor_status': sensor_status,
                         'activity': current_activity,
                         'sensor_duration': 0  # Will be calculated later
@@ -655,22 +658,180 @@ class SensorDataset:
         
         return activity_name
     
-    def _infer_sensor_place(self, sensor_id: str, dataset_name: str) -> str:
-        """Infer sensor place based on sensor ID and dataset"""
-        # This is a simplified mapping - in practice, you'd want to use
-        # the actual floor plan information from each dataset
+    def _get_sensor_mapping(self, sensor_id: str, dataset_name: str) -> Tuple[str, str]:
+        """Get sensor location and place based on sensor ID and dataset
         
-        # Common room types based on sensor ID patterns
-        if sensor_id.startswith('M'):
-            return 'Room'  # Motion sensor - generic room
-        elif sensor_id.startswith('D'):
-            return 'Door'  # Door sensor
-        elif sensor_id.startswith('T'):
-            return 'Room'  # Temperature sensor
-        elif sensor_id.startswith('AD'):
-            return 'Room'  # Analog sensor
-        else:
-            return 'Unknown'
+        Returns:
+            Tuple[str, str]: (sensor_location, sensor_place)
+        """
+        dataset_name = dataset_name.lower()
+
+        # CASAS Aruba mapping: {sensor_id: [location, place]}
+        if dataset_name == "casas_aruba":
+            aruba_mapping = {
+                "M001": ["Cabinet", "Bedroom_R1"],
+                "M002": ["Bed", "Bedroom_R1"],
+                "M003": ["Bed", "Bedroom_R1"],
+                "M004": ["Door", "Bathroom_R1"],
+                "M005": ["Chest_of_drawers", "Bedroom_R1"],
+                "M006": ["Door", "Bedroom_R1"],
+                "M007": ["Main", "Bedroom_R1"],
+                "M008": ["Aisle", "Living"],
+                "M009": ["Couch", "Living"],
+                "M010": ["Couch", "Living"],
+                "M011": ["Door", "Front_door"],
+                "M012": ["Open_area", "Living"],
+                "M013": ["Open_area", "Living"],
+                "M014": ["Table", "Dining"],
+                "M015": ["Counter", "Kitchen"],
+                "M016": ["Door", "Back_door"],
+                "M017": ["Open_area", "Kitchen"],
+                "M018": ["Open_area", "Kitchen"],
+                "M019": ["Open_area", "Kitchen"],
+                "M020": ["Open_area", "Living"],
+                "M021": ["Aisle", "Aisle"],
+                "M022": ["Aisle", "Aisle"],
+                "M023": ["Door", "Bedroom_R2"],
+                "M024": ["Open_area", "Bedroom_R2"],
+                "M025": ["Table", "Office"],
+                "M026": ["Table", "Office"],
+                "M027": ["Open_area", "Office"],
+                "M028": ["Door", "Office"],
+                "M029": ["Door", "Bathroom_R2"],
+                "M030": ["Door", "Garage_door"],
+                "M031": ["Door", "Bathroom_R2"],
+                "D001": ["Door", "Front_door"],
+                "D002": ["Door", "Back_door"],
+                "D003": ["Door", "Bathroom_R2_door"],
+                "D004": ["Door", "Garage_door"],
+                "T001": ["Bed", "Bedroom_R1"],
+                "T002": ["TV", "Living"],
+                "T003": ["Counter", "Kitchen"],
+                "T004": ["Door", "Bathroom_R2"],
+                "T005": ["Table", "Office"]
+            }
+            if sensor_id in aruba_mapping:
+                return aruba_mapping[sensor_id][0], aruba_mapping[sensor_id][1]
+            return "Unknown", "Unknown"
+            
+        elif dataset_name == "casas_cairo":
+            # Cairo: Two-resident home with separate living spaces
+            cairo_mapping = {
+                # Left space - Living/Kitchen area
+                "M024": ["Open_area", "Living_R1"],
+                "M022": ["Open_area", "Living_R1"],
+                "M020": ["Open_area", "Living_R1"],
+                "M019": ["Open_area", "Living_R1"],
+                "M021": ["Table", "Dining_R1"],
+                "M017": ["Counter", "Kitchen_R1"],
+                "M013": ["Counter", "Kitchen_R1"],
+                "M011": ["Stove", "Kitchen_R1"],
+                "M012": ["Counter", "Kitchen_R1"],
+                "M018": ["Counter", "Kitchen_R1"],
+                "M016": ["Sink", "Kitchen_R1"],
+                "M014": ["Counter", "Kitchen_R1"],
+                "M023": ["Door", "Entrance_R1"],
+                "M025": ["Stairs", "Hallway"],
+                "T003": ["Counter", "Kitchen_R1"],
+                "T005": ["Counter", "Kitchen_R1"],
+                # Right space - Bedroom/Bathroom area
+                "M007": ["Open_area", "Bedroom_R2"],
+                "M009": ["Open_area", "Bedroom_R2"],
+                "M005": ["Open_area", "Bedroom_R2"],
+                "M006": ["Door", "Bedroom_R2"],
+                "M008": ["Open_area", "Bedroom_R2"],
+                "M003": ["Toilet/shower", "Bathroom_R2"],
+                "M002": ["Toilet/shower", "Bathroom_R2"],
+                "M001": ["Open_area", "Living_R2"],
+                "M004": ["Bed", "Bedroom_R2"],
+                "M026": ["Open_area", "Bedroom_R2"],
+                "M027": ["Open_area", "Bedroom_R2"],
+                "T001": ["Open_area", "Bedroom_R2"],
+                "T002": ["Toilet/shower", "Bathroom_R2"],
+                "T004": ["Open_area", "Living_R2"]
+            }
+            if sensor_id in cairo_mapping:
+                return cairo_mapping[sensor_id][0], cairo_mapping[sensor_id][1]
+            return "Unknown", "Unknown"
+            
+        elif dataset_name == "casas_kyoto":
+            # Kyoto: Multi-resident dataset (R1, R2)
+            kyoto_mapping = {
+                # Motion sensors in various rooms
+                "M29": ["Door", "Entrance"],
+                "M30": ["Door", "Entrance"],
+                "M31": ["Open_area", "Living"],
+                "M32": ["Open_area", "Bathroom"],
+                "M33": ["Toilet/shower", "Bathroom"],
+                "M34": ["Open_area", "Bedroom"],
+                "M35": ["Bed", "Bedroom"],
+                "M36": ["Open_area", "Bedroom"],
+                "M37": ["Aisle", "Hallway"],
+                "M38": ["Aisle", "Hallway"],
+                "M39": ["Toilet/shower", "Bathroom"],
+                "M40": ["Open_area", "Living"],
+                "M41": ["Open_area", "Living"],
+                "M42": ["Counter", "Kitchen"],
+                "M43": ["Counter", "Kitchen"],
+                "M44": ["Stove", "Kitchen"],
+                "M45": ["Sink", "Kitchen"],
+                "M46": ["Counter", "Kitchen"],
+                "M47": ["Table", "Dining"],
+                "M48": ["Table", "Dining"],
+                "M49": ["Open_area", "Living"],
+                "M50": ["Open_area", "Living"],
+                "M51": ["Door", "Entrance"],
+                # Analog sensors
+                "AD1-A": ["Burner", "Kitchen"],
+                "AD1-B": ["Burner", "Kitchen"],
+                "AD1-C": ["Burner", "Kitchen"]
+            }
+            if sensor_id in kyoto_mapping:
+                return kyoto_mapping[sensor_id][0], kyoto_mapping[sensor_id][1]
+            return "Unknown", "Unknown"
+            
+        elif dataset_name == "casas_milan":
+            milan_mapping = {
+                "M001": ["Maindoor", "Entrance"],
+                "M002": ["Coat_cabinet", "Entrance"],
+                "M003": ["Table", "Dining"],
+                "M004": ["Sofa", "Living"],
+                "M005": ["Slider_door", "Living"],
+                "M006": ["Door", "Workspace_TV"],
+                "M007": ["Desk", "Workspace_TV"],
+                "M008": ["Sofa", "Workspace_TV"],
+                "M009": ["Dryer_washer", "Bathroom_aisle"],
+                "M010": ["Aisle", "Kitchen_aisle"],
+                "M011": ["Aisle", "Kitchen_aisle"],
+                "M012": ["Door", "Kitchen"],
+                "M013": ["Toilet/shower", "Master_bathroom"],
+                "M014": ["Maindoor", "Kitchen"],
+                "M015": ["Fridge", "Kitchen"],
+                "M016": ["Door", "Kitchen"],
+                "M017": ["Door", "Guest_bathroom"],
+                "M018": ["Toilet/shower", "Guest_bathroom"],
+                "M019": ["Aisle", "Bathroom_aisle"],
+                "M020": ["Open_area", "Master_bedroom"],
+                "M021": ["Bed", "Master_bedroom"],
+                "M022": ["Stove", "Kitchen"],
+                "M023": ["Open_area", "Kitchen"],
+                "M024": ["Open_area", "Guest_bedroom"],
+                "M025": ["Walkin_closet", "Master_bathroom"],
+                "M026": ["Open_area", "Workspace_TV"],
+                "M027": ["Open_area", "Living"],
+                "M028": ["Open_area", "Master_bedroom"],
+                "D001": ["Maindoor", "Entrance"],
+                "D002": ["Coat_cabinet", "Entrance"],
+                "D003": ["Maindoor", "Kitchen"],
+                "T001": ["Door", "Kitchen"],
+                "T002": ["Aisle", "Kitchen_aisle"]
+            }
+            if sensor_id in milan_mapping:
+                return milan_mapping[sensor_id][0], milan_mapping[sensor_id][1]
+            return "Unknown", "Unknown"
+        
+        # Default fallback
+        return "Unknown", "Unknown"
     
     def _calculate_casas_sensor_durations(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate sensor duration based on ON/OFF status changes for CASAS data"""
