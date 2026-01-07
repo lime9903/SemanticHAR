@@ -34,7 +34,7 @@ class SemanticHARConfig:
     use_event_based: bool = True
     use_multi_user: bool = False
     use_multi_modal: bool = False
-    source_dataset: str = "casas_cairo"  # choices: uci_adl_home_a, uci_adl_home_b, marble, casas_aruba, casas_cairo, casas_kyoto, casas_milan
+    source_dataset: str = "casas_milan"  # choices: uci_adl_home_a, uci_adl_home_b, marble, casas_aruba, casas_cairo, casas_kyoto, casas_milan
     target_dataset: str = "casas_aruba"  # choices: uci_adl_home_a, uci_adl_home_b, marble, casas_aruba, casas_cairo, casas_kyoto, casas_milan
     source_train_ratio: float = 0.8  # 80% for train, 20% for val
     

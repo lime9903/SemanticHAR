@@ -30,8 +30,8 @@ class SensorDataset:
         """
         Args:
             config: Configuration
-            source_dataset: Source dataset name ("MARBLE" or "UCI_ADL_home_a" or "UCI_ADL_home_b")
-            target_dataset: Target dataset name ("MARBLE" or "UCI_ADL_home_a" or "UCI_ADL_home_b")
+            source_dataset: Source dataset name ("casas_aruba" / "casas_cairo" / "casas_kyoto" / "casas_milan" / "uci_adl_home_a" / "uci_adl_home_b")
+            target_dataset: Target dataset name ("casas_aruba" / "casas_cairo" / "casas_kyoto" / "casas_milan" / "uci_adl_home_a" / "uci_adl_home_b")
         """
         self.config = config
         self.source_dataset = config.source_dataset
@@ -57,183 +57,12 @@ class SensorDataset:
         dataset_name = dataset_name.lower()
         print(f"Loading dataset: {dataset_name}")
         
-        if dataset_name == "marble":
-            return self._load_marble_data()
-        elif dataset_name.startswith("uci_adl"):
+        if dataset_name in ["uci_adl_home_a", "uci_adl_home_b"]:
             return self._load_uci_adl_data(dataset_name)
-        elif dataset_name.startswith("casas"):
+        elif dataset_name in ["casas_aruba", "casas_cairo", "casas_kyoto", "casas_milan"]:
             return self._load_casas_data(dataset_name)
         else:
             raise ValueError(f"✗ Unsupported dataset: {dataset_name}")
-    
-    def _load_marble_data(self) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-        """MARBLE Dataset loading - Environmental sensors only"""
-        dataset_path = os.path.join(self.config.marble_data_path, "dataset")
-
-        if not os.path.exists(dataset_path):
-            print(f"✗ MARBLE Dataset path not found: {dataset_path}")
-            return np.array([]), np.array([]), []
-        
-        # Environmental sensor location mapping
-        env_sensor_mapping = {
-            'R1': 'pantry',
-            'R2': 'cutlery drawer',
-            'R5': 'pots drawer',
-            'R6': 'medicines cabinet',
-            'R7': 'fridge',
-            'E1': 'stove',
-            'E2': 'television',
-            'P1': 'dining room chair',
-            'P2': 'office chair',
-            'P3': 'living room couch',
-            'P4': 'dining room chair',
-            'P5': 'dining room chair',
-            'P6': 'dining room chair',
-            'P7': 'living room couch',
-            'P8': 'living room couch',
-            'P9': 'living room couch'
-        }
-        
-        print(f"\nProcessing MARBLE dataset from {dataset_path}")
-        
-        all_sensor_data = []
-        
-        # Process all scenarios
-        for scenario_dir in os.listdir(dataset_path):
-            scenario_path = os.path.join(dataset_path, scenario_dir)
-            if not os.path.isdir(scenario_path):
-                continue
-                
-            print(f"Processing scenario: {scenario_dir}")
-            
-            # Process each instance in the scenario
-            for instance_dir in os.listdir(scenario_path):
-                instance_path = os.path.join(scenario_path, instance_dir)
-                if not os.path.isdir(instance_path):
-                    continue
-                    
-                print(f"  Processing instance: {instance_dir}")
-                
-                # Load environmental data for this instance
-                env_file = os.path.join(instance_path, "environmental.csv")
-                if not os.path.exists(env_file):
-                    print(f"    No environmental data found for {instance_dir}")
-                    continue
-                    
-                try:
-                    env_df = pd.read_csv(env_file)
-                    if env_df.empty:
-                        print(f"    Empty environmental data for {instance_dir}")
-                        continue
-                        
-                    # Process each subject in the instance
-                    for subject_dir in os.listdir(instance_path):
-                        subject_path = os.path.join(instance_path, subject_dir)
-                        if not os.path.isdir(subject_path):
-                            continue
-                            
-                        try:
-                            # Load labels and locations
-                            labels_file = os.path.join(subject_path, 'labels.csv')
-                            locations_file = os.path.join(subject_path, 'locations.csv')
-
-                            if not os.path.exists(labels_file) or not os.path.exists(locations_file):
-                                print(f'Warning: Could not find files from {labels_file} or {locations_file}')
-                                continue
-                                
-                            labels_df = pd.read_csv(labels_file)
-                            locations_df = pd.read_csv(locations_file)
-                            
-                            # Process environmental data for this subject
-                            sensor_data = []
-                            
-                            for _, row in env_df.iterrows():
-                                timestamp = row['ts']
-                                sensor_id = row['sensor_id']
-
-                                # Map sensor location
-                                sensor_location = env_sensor_mapping.get(sensor_id, 'Unknown')
-                                
-                                # Determine sensor type
-                                if sensor_id.startswith('R'):
-                                    sensor_type = 'Magnetic'
-                                elif sensor_id.startswith('E'):
-                                    sensor_type = 'Smart Plug'
-                                elif sensor_id.startswith('P'):
-                                    sensor_type = 'Pressure Mat'
-                                else:
-                                    sensor_type = 'Unknown'
-
-                                activity_name = 'Unknown'
-                                place_name = 'Unknown'
-                                duration = 0
-                                
-                                # Find corresponding activity
-                                for _, label_row in labels_df.iterrows():
-                                    if label_row['ts_start'] <= timestamp <= label_row['ts_end']:
-                                        # Map activity name to ID
-                                        activity_name = label_row['act'].capitalize()
-                                        if activity_name == 'Transition':
-                                            activity_name = 'Unknown'
-                                        break
-
-                                # Find corresponding location
-                                for _, loc_row in locations_df.iterrows():
-                                    if loc_row['ts_start'] <= timestamp <= loc_row['ts_end']:
-                                        place_name = loc_row['location'].capitalize()
-                                        break
-                            
-                                sensor_data.append({
-                                    'scenario': scenario_dir,
-                                    'instance': instance_dir,
-                                    'subject': subject_dir,
-                                    'timestamp': timestamp,
-                                    'sensor_location': sensor_location,
-                                    'sensor_type': sensor_type,
-                                    'sensor_place': place_name,
-                                    'activity': activity_name,
-                                    'sensor_duration': duration,
-                                    'sensor_id': sensor_id,
-                                    'sensor_status': row['sensor_status']
-                                })
-
-                            if sensor_data:
-                                all_sensor_data.extend(sensor_data)
-                            
-                        except Exception as e:
-                            print(f"    Error loading subject data from {subject_path}: {e}")
-                            continue
-                            
-                except Exception as e:
-                    print(f"  Error processing instance {instance_dir}: {e}")
-                    continue
-        
-        if len(all_sensor_data) > 0:
-            # Calculate duration of each sensor triggered data
-            all_sensor_data = pd.DataFrame(all_sensor_data)
-            all_sensor_data = all_sensor_data.sort_values('timestamp', ignore_index=True)
-            all_sensor_data['timestamp'] = pd.to_datetime(all_sensor_data['timestamp'], unit='ms')
-            
-            # Remove rows with 'Unknown' activity
-            all_sensor_data = all_sensor_data[all_sensor_data['activity'] != 'Unknown'].copy()
-            
-            if len(all_sensor_data) == 0:
-                print("✗ No valid data found after removing Unknown activities")
-                return np.array([]), np.array([]), []
-            
-            # Calculate sensor duration based on ON/OFF status
-            all_sensor_data = self._calculate_sensor_durations(all_sensor_data)
-            
-            activity_label = np.array(all_sensor_data['activity'])
-            activity_name = all_sensor_data['activity'].unique().tolist()
-            print(f"\nCreated MARBLE dataset with {len(all_sensor_data)} sensor-activity pairs")
-            print(f"Sensor data: {all_sensor_data[:3]}")
-            print(f"Activity names: {activity_name}")
-        else:
-            print("✗ No valid data found in MARBLE dataset")
-            return np.array([]), np.array([]), []
-    
-        return all_sensor_data, activity_label, activity_name
     
     def _calculate_sensor_durations(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate sensor duration based on ON/OFF status changes"""
@@ -345,7 +174,7 @@ class SensorDataset:
                         'timestamp': sensor_time,
                         'sensor_location': sensor_row['location'],
                         'sensor_type': sensor_row['type'],
-                        'sensor_place': sensor_row['place'],
+                        'sensor_context': sensor_row['place'],
                         'activity': matching_activity,
                         'sensor_duration': (pd.to_datetime(sensor_row['end_time']) - sensor_time).total_seconds()
                     }
@@ -480,7 +309,7 @@ class SensorDataset:
             data_file = "cairo.txt"
         elif dataset_name == "casas_kyoto":
             data_path = self.config.casas_kyoto_data_path
-            data_file = "kyoto7.txt"
+            data_file = "kyoto11.txt"
         elif dataset_name == "casas_milan":
             data_path = self.config.casas_milan_data_path
             data_file = "milan.txt"
@@ -539,15 +368,15 @@ class SensorDataset:
                 
                 # Only include sensor events with known activity
                 if current_activity and sensor_status in ['ON', 'OFF', 'OPEN', 'CLOSE']:
-                    # Get sensor location and place from mapping
-                    sensor_location, sensor_place = self._get_sensor_mapping(sensor_id, dataset_name)
+                    # Get sensor location and context from mapping
+                    sensor_location, sensor_context = self._get_sensor_mapping(sensor_id, dataset_name)
                     
                     sensor_data = {
                         'timestamp': timestamp,
                         'sensor_id': sensor_id,
                         'sensor_location': sensor_location,
                         'sensor_type': sensor_type,
-                        'sensor_place': sensor_place,
+                        'sensor_context': sensor_context,
                         'sensor_status': sensor_status,
                         'activity': current_activity,
                         'sensor_duration': 0  # Will be calculated later
@@ -653,102 +482,192 @@ class SensorDataset:
         # Replace underscores with spaces
         activity_name = activity_name.replace('_', ' ')
         
-        # Capitalize first letter
+        # Capitalize first letter and strip
         activity_name = activity_name.strip().capitalize()
+        
+        # Apply unified activity mapping
+        activity_name = self._map_activity_to_category(activity_name)
         
         return activity_name
     
+    def _map_activity_to_category(self, activity_name: str) -> str:
+        """Map activity name to unified category"""
+        normalized = activity_name.lower().replace(' ', '').replace('_', '')
+        
+        # Unified activity mapping
+        activity_mapping = {
+            # Relax
+            'relax': 'Relax',
+            'watchtv': 'Relax',
+            'read': 'Relax',
+            'sparetime/tv': 'Relax',
+            
+            # Cook
+            'mealpreparation': 'Cook',
+            'kitchenactivity': 'Cook',
+            
+            # Eat
+            'eating': 'Eat',
+            'breakfast': 'Eat',
+            'lunch': 'Eat',
+            'dinner': 'Eat',
+            'diningroomactivity': 'Eat',
+            'snack': 'Eat',
+
+            # Work
+            'work': 'Work',
+            'washdishes': 'Work',
+            'housekeeping': 'Work',
+            'workinoffice': 'Work',
+            'laundry': 'Work',
+            'deskactivity': 'Work',
+            'chores': 'Work',
+            
+            # Bathing
+            'bathing': 'Bathing',
+            'guestbathroom': 'Bathing',
+            'masterbathroom': 'Bathing',
+            'showering': 'Bathing',
+            
+            # PersonalHygiene
+            'personalhygiene': 'Personal Hygiene',
+            'toileing': 'Personal Hygiene',
+            'grooming': 'Personal Hygiene',
+
+            # Sleep
+            'sleeping': 'Sleep',
+            'sleep': 'Sleep',
+            'sleepingnotinbed': 'Sleep',
+            
+            # BedtoToilet
+            'bedtotoilet': 'Bed to Toilet',
+            'bedtoilettransition': 'Bed to Toilet',
+            
+            # TakeMedicine
+            'takemedicine': 'Take Medicine',
+            'morningmeds': 'Take Medicine',
+            'eveningmeds': 'Take Medicine',
+            
+            # Enter Home
+            'enterhome': 'Enter Home',
+            
+            # Leave Home
+            'leavehome': 'Leave Home',
+            'leaving': 'Leave Home',
+
+            # Other
+            'resperate': 'Other',
+            'nightwandering': 'Other',
+            'wake': 'Other',
+            'wanderinginroom': 'Other',
+            'masterbedroomactivity': 'Other',
+            'meditate': 'Other',
+            'other': 'Other'
+        }
+        
+        if normalized in activity_mapping:
+            return activity_mapping[normalized]
+        
+        # If no exact match, return original (capitalized)
+        return activity_name
+    
     def _get_sensor_mapping(self, sensor_id: str, dataset_name: str) -> Tuple[str, str]:
-        """Get sensor location and place based on sensor ID and dataset
+        """Get sensor context and location based on sensor ID and dataset
         
         Returns:
-            Tuple[str, str]: (sensor_location, sensor_place)
+            Tuple[str, str]: (sensor_location, sensor_context)
         """
         dataset_name = dataset_name.lower()
 
-        # CASAS Aruba mapping: {sensor_id: [location, place]}
+        # CASAS mapping: {sensor_id: [location, context]}
         if dataset_name == "casas_aruba":
+            # Aruba: Single-resident home
+            # Single story home with living space, dining space, kitchen, office, 2 bedrooms, 2 bathrooms, and closet
             aruba_mapping = {
-                "M001": ["Cabinet", "Bedroom_R1"],
-                "M002": ["Bed", "Bedroom_R1"],
-                "M003": ["Bed", "Bedroom_R1"],
-                "M004": ["Door", "Bathroom_R1"],
-                "M005": ["Chest_of_drawers", "Bedroom_R1"],
-                "M006": ["Door", "Bedroom_R1"],
-                "M007": ["Main", "Bedroom_R1"],
-                "M008": ["Aisle", "Living"],
-                "M009": ["Couch", "Living"],
-                "M010": ["Couch", "Living"],
-                "M011": ["Door", "Front_door"],
-                "M012": ["Open_area", "Living"],
-                "M013": ["Open_area", "Living"],
-                "M014": ["Table", "Dining"],
-                "M015": ["Counter", "Kitchen"],
-                "M016": ["Door", "Back_door"],
-                "M017": ["Open_area", "Kitchen"],
-                "M018": ["Open_area", "Kitchen"],
-                "M019": ["Open_area", "Kitchen"],
-                "M020": ["Open_area", "Living"],
-                "M021": ["Aisle", "Aisle"],
-                "M022": ["Aisle", "Aisle"],
-                "M023": ["Door", "Bedroom_R2"],
-                "M024": ["Open_area", "Bedroom_R2"],
-                "M025": ["Table", "Office"],
-                "M026": ["Table", "Office"],
-                "M027": ["Open_area", "Office"],
-                "M028": ["Door", "Office"],
-                "M029": ["Door", "Bathroom_R2"],
-                "M030": ["Door", "Garage_door"],
-                "M031": ["Door", "Bathroom_R2"],
-                "D001": ["Door", "Front_door"],
-                "D002": ["Door", "Back_door"],
-                "D003": ["Door", "Bathroom_R2_door"],
-                "D004": ["Door", "Garage_door"],
-                "T001": ["Bed", "Bedroom_R1"],
-                "T002": ["TV", "Living"],
-                "T003": ["Counter", "Kitchen"],
-                "T004": ["Door", "Bathroom_R2"],
-                "T005": ["Table", "Office"]
+                "M001": ["Bedroom 1", "in first bedroom"],
+                "M002": ["Bedroom 1", "on bed of first bedroom"],
+                "M003": ["Bedroom 1", "on bed of first bedroom"],
+                "M004": ["Bathroom 1", "between first bedroom and first bathroom"],
+                "M005": ["Bedroom 1", "in first bedroom"],
+                "M006": ["Bedroom 1", "on first bedroom door"],
+                "M007": ["Bedroom 1", "in first bedroom"],
+                "M008": ["Corridor near bedroom 1", "in home entrance corridor"],
+                "M009": ["Living room", "between living room and home entrance corridor"],
+                "M010": ["Living room", "between living room and home entrance corridor"],
+                "M011": ["Corridor near bedroom 1", "near front door"],
+                "M012": ["Living room", "in living room"],
+                "M013": ["Living room", "between dining area and living room"],
+                "M014": ["Dining area", "in dining area"],
+                "M015": ["Kitchen", "in kitchen"],
+                "M016": ["Kitchen", "near back door"],
+                "M017": ["Kitchen", "in kitchen"],
+                "M018": ["Kitchen", "between kitchen and dining area"],
+                "M019": ["Kitchen", "in kitchen"],
+                "M020": ["Living room", "in living room"],
+                "M021": ["Corridor near bathroom 2", "in corridor between second bathroom and living room"],
+                "M022": ["Corridor near bathroom 2", "in corridor between second bathroom and second bedroom"],
+                "M023": ["Bedroom 2", "on second bedroom door"],
+                "M024": ["Bedroom 2", "in second bedroom"],
+                "M025": ["Office", "in office"],
+                "M026": ["Office", "on office desk and chair"],
+                "M027": ["Office", "in office"],
+                "M028": ["Office", "on office door between office and corridor near second bathroom"],
+                "M029": ["Bathroom 2", "between corridor and second bathroom"],
+                "M030": ["Garage", "in corridor between garage door and second bathroom"],
+                "M031": ["Corridor near bathroom 2", "in corridor near bathroom 2"],
+
+                "D001": ["Front door", "in home entrance corridor"],
+                "D002": ["Back door", "between kitchen and back door"],
+                "D003": ["Corridor near bathroom 2", "in corridor near second bathroom"],
+                "D004": ["Garage door", "on garage door"],
+
+                "T001": ["Bedroom 1", "in first bedroom"],
+                "T002": ["Living room", "in living room"],
+                "T003": ["Kitchen", "in kitchen"],
+                "T004": ["Corridor near bathroom 2", "in corridor between second bathroom and dining area"],
+                "T005": ["Office", "in office"]
             }
             if sensor_id in aruba_mapping:
                 return aruba_mapping[sensor_id][0], aruba_mapping[sensor_id][1]
             return "Unknown", "Unknown"
             
         elif dataset_name == "casas_cairo":
-            # Cairo: Two-resident home with separate living spaces
+            # Cairo: Two-resident home (R1, R2)
+            # Three story home with living space, dining space, kitchen, 2 bedrooms, office, laundry room, and garage room
             cairo_mapping = {
-                # Left space - Living/Kitchen area
-                "M024": ["Open_area", "Living_R1"],
-                "M022": ["Open_area", "Living_R1"],
-                "M020": ["Open_area", "Living_R1"],
-                "M019": ["Open_area", "Living_R1"],
-                "M021": ["Table", "Dining_R1"],
-                "M017": ["Counter", "Kitchen_R1"],
-                "M013": ["Counter", "Kitchen_R1"],
-                "M011": ["Stove", "Kitchen_R1"],
-                "M012": ["Counter", "Kitchen_R1"],
-                "M018": ["Counter", "Kitchen_R1"],
-                "M016": ["Sink", "Kitchen_R1"],
-                "M014": ["Counter", "Kitchen_R1"],
-                "M023": ["Door", "Entrance_R1"],
-                "M025": ["Stairs", "Hallway"],
-                "T003": ["Counter", "Kitchen_R1"],
-                "T005": ["Counter", "Kitchen_R1"],
-                # Right space - Bedroom/Bathroom area
-                "M007": ["Open_area", "Bedroom_R2"],
-                "M009": ["Open_area", "Bedroom_R2"],
-                "M005": ["Open_area", "Bedroom_R2"],
-                "M006": ["Door", "Bedroom_R2"],
-                "M008": ["Open_area", "Bedroom_R2"],
-                "M003": ["Toilet/shower", "Bathroom_R2"],
-                "M002": ["Toilet/shower", "Bathroom_R2"],
-                "M001": ["Open_area", "Living_R2"],
-                "M004": ["Bed", "Bedroom_R2"],
-                "M026": ["Open_area", "Bedroom_R2"],
-                "M027": ["Open_area", "Bedroom_R2"],
-                "T001": ["Open_area", "Bedroom_R2"],
-                "T002": ["Toilet/shower", "Bathroom_R2"],
-                "T004": ["Open_area", "Living_R2"]
+                "M001": ["Office", "in office"],
+                "M002": ["Corridor near bedroom", "between bedroom, guest room and office"],
+                "M003": ["Corridor near bedroom", "between office and bedroom"],
+                "M004": ["Guest room", "in guest room"],
+                "M005": ["Bedroom", "in bedroom"],
+                "M006": ["Bedroom", "on door of bedroom"],
+                "M007": ["Bedroom", "near bathroom in bedroom"],
+                "M008": ["Bedroom", "on bed in bedroom"],
+                "M009": ["Bedroom", "on bed in bedroom"],
+                "M010": ["Corridor near bedroom", "close to stairs in corridor near bedroom"],
+                "M011": ["Living room", "near bottom of stairs in living room"],
+                "M012": ["Kitchen", "in kitchen"],
+                "M013": ["Living room", "near couch in living room"],
+                "M014": ["Living room", "near stairs in living room"],
+                "M015": ["Entrance", "near outside door in living room"],
+                "M016": ["Living room", "in living room"],
+                "M017": ["Living room", "near couch in living room"],
+                "M018": ["Living room", "in living room"],
+                "M019": ["Kitchen", "near dining area in kitchen"],
+                "M020": ["Dining area", "in dining area"],
+                "M021": ["Kitchen", "near medicine cabinet in kitchen"],
+                "M022": ["Kitchen", "in kitchen"],
+                "M023": ["Living room", "in living room"],
+                "M024": ["Kitchen", "in kitchen"],
+                "M025": ["Other room", "in other room"],
+                "M026": ["Laundary room", "in laundary room"],
+                "M027": ["Laundary room", "near garage door in laundary room"],
+
+                "T001": ["Bedroom", "near bathroom in bedroom"],
+                "T002": ["Office", "in office"],
+                "T003": ["Living room", "near stairs in living room"],
+                "T004": ["Kitchen", "near medicine cabinet in kitchen"],
+                "T005": ["Living room", "in living room"]
             }
             if sensor_id in cairo_mapping:
                 return cairo_mapping[sensor_id][0], cairo_mapping[sensor_id][1]
@@ -757,74 +676,49 @@ class SensorDataset:
         elif dataset_name == "casas_kyoto":
             # Kyoto: Multi-resident dataset (R1, R2)
             kyoto_mapping = {
-                # Motion sensors in various rooms
-                "M29": ["Door", "Entrance"],
-                "M30": ["Door", "Entrance"],
-                "M31": ["Open_area", "Living"],
-                "M32": ["Open_area", "Bathroom"],
-                "M33": ["Toilet/shower", "Bathroom"],
-                "M34": ["Open_area", "Bedroom"],
-                "M35": ["Bed", "Bedroom"],
-                "M36": ["Open_area", "Bedroom"],
-                "M37": ["Aisle", "Hallway"],
-                "M38": ["Aisle", "Hallway"],
-                "M39": ["Toilet/shower", "Bathroom"],
-                "M40": ["Open_area", "Living"],
-                "M41": ["Open_area", "Living"],
-                "M42": ["Counter", "Kitchen"],
-                "M43": ["Counter", "Kitchen"],
-                "M44": ["Stove", "Kitchen"],
-                "M45": ["Sink", "Kitchen"],
-                "M46": ["Counter", "Kitchen"],
-                "M47": ["Table", "Dining"],
-                "M48": ["Table", "Dining"],
-                "M49": ["Open_area", "Living"],
-                "M50": ["Open_area", "Living"],
-                "M51": ["Door", "Entrance"],
-                # Analog sensors
-                "AD1-A": ["Burner", "Kitchen"],
-                "AD1-B": ["Burner", "Kitchen"],
-                "AD1-C": ["Burner", "Kitchen"]
+                
             }
             if sensor_id in kyoto_mapping:
                 return kyoto_mapping[sensor_id][0], kyoto_mapping[sensor_id][1]
             return "Unknown", "Unknown"
             
         elif dataset_name == "casas_milan":
+            # Milan: Single-resident home
+            # Single story home with living space, dining space, kitchen, workspace/TV room, 2 bedrooms, 2 bathrooms, and garage
             milan_mapping = {
-                "M001": ["Maindoor", "Entrance"],
-                "M002": ["Coat_cabinet", "Entrance"],
-                "M003": ["Table", "Dining"],
-                "M004": ["Sofa", "Living"],
-                "M005": ["Slider_door", "Living"],
-                "M006": ["Door", "Workspace_TV"],
-                "M007": ["Desk", "Workspace_TV"],
-                "M008": ["Sofa", "Workspace_TV"],
-                "M009": ["Dryer_washer", "Bathroom_aisle"],
-                "M010": ["Aisle", "Kitchen_aisle"],
-                "M011": ["Aisle", "Kitchen_aisle"],
-                "M012": ["Door", "Kitchen"],
-                "M013": ["Toilet/shower", "Master_bathroom"],
-                "M014": ["Maindoor", "Kitchen"],
-                "M015": ["Fridge", "Kitchen"],
-                "M016": ["Door", "Kitchen"],
-                "M017": ["Door", "Guest_bathroom"],
-                "M018": ["Toilet/shower", "Guest_bathroom"],
-                "M019": ["Aisle", "Bathroom_aisle"],
-                "M020": ["Open_area", "Master_bedroom"],
-                "M021": ["Bed", "Master_bedroom"],
-                "M022": ["Stove", "Kitchen"],
-                "M023": ["Open_area", "Kitchen"],
-                "M024": ["Open_area", "Guest_bedroom"],
-                "M025": ["Walkin_closet", "Master_bathroom"],
-                "M026": ["Open_area", "Workspace_TV"],
-                "M027": ["Open_area", "Living"],
-                "M028": ["Open_area", "Master_bedroom"],
-                "D001": ["Maindoor", "Entrance"],
-                "D002": ["Coat_cabinet", "Entrance"],
-                "D003": ["Maindoor", "Kitchen"],
-                "T001": ["Door", "Kitchen"],
-                "T002": ["Aisle", "Kitchen_aisle"]
+                "M001": ["Entrance", "near home entrance"],
+                "M002": ["Entrance", "near home entrance towards living room"],
+                "M003": ["Dining area", "on table in dining area"],
+                "M004": ["Living room", "on sofa in living room"],
+                "M005": ["Living room", "in living room near slider door"],
+                "M006": ["Workspace/TV room", "between living room and workspace/TV room"],
+                "M007": ["Workspace/TV room", "near desk in workspace/TV room"],
+                "M008": ["Workspace/TV room", "on sofa in workspace/TV room"],
+                "M009": ["Corridor near bathroom 1", "in corridor near first bathroom close to the washer and dryer"],
+                "M010": ["Corridor near kitchen", "in corridor between dining area and kitchen"],
+                "M011": ["Corridor near kitchen", "in corridor between second bathroom and kitchen"],
+                "M012": ["Kitchen", "between dining area and kitchen"],
+                "M013": ["Bathroom 1", "near sink in first bathroom"],
+                "M014": ["Kitchen", "near door in kitchen"],
+                "M015": ["Kitchen", "near fridge in the kitchen"],
+                "M016": ["Kitchen", "between corridor and medicine cabinet in the kitchen"],
+                "M017": ["Bathroom 2", "near sink in second bathroom"],
+                "M018": ["Bathroom 2", "near toilet/shower in second bathroom"],
+                "M019": ["Corridor near bathroom 1", "in corridor between workspace/TV room and first bathroom"],
+                "M020": ["Bedroom 1", "between first bedroom and first bathroom"],
+                "M021": ["Bedroom 1", "on bed in first bedroom"],
+                "M022": ["Kitchen", "near stove in kitchen"],
+                "M023": ["Kitchen", "in kitchen"],
+                "M024": ["Bedroom 2", "in second bedroom"],
+                "M025": ["Bathroom 1", "between first bathroom and walk-in closet"],
+                "M026": ["Workspace_TV room", "in workspace/TV room"],
+                "M027": ["Living room", "in living room"],
+                "M028": ["Bedroom 1", "in first bedroom"],
+                "D001": ["Entrance", "on home entrance door"],
+                "D002": ["Entrance", "on coat cabinet near home entrance door"],
+                "D003": ["Kitchen", "on kitchen door"],
+                "T001": ["Kitchen", "in kitchen near stove"],
+                "T002": ["Corridor near bathroom 2", "in corridor near second bathroom"]
             }
             if sensor_id in milan_mapping:
                 return milan_mapping[sensor_id][0], milan_mapping[sensor_id][1]
@@ -1138,7 +1032,7 @@ def _save_windows(split_data: Dict, source_activity_name: List, target_activity_
                     activity = window['activity'].iloc[0] if 'activity' in window.columns else 'Unknown'
                     sensor_types = window['sensor_type'].unique().tolist() if 'sensor_type' in window.columns else []
                     locations = window['sensor_location'].unique().tolist() if 'sensor_location' in window.columns else []
-                    places = window['sensor_place'].unique().tolist() if 'sensor_place' in window.columns else []
+                    contexts = window['sensor_context'].unique().tolist() if 'sensor_context' in window.columns else []
                     
                     window_info = {
                         'window_id': f'{dataset}_{split_name}_{i+1}',
@@ -1148,7 +1042,7 @@ def _save_windows(split_data: Dict, source_activity_name: List, target_activity_
                         'activity': activity,
                         'sensor_types': sensor_types,
                         'locations': locations,
-                        'places': places
+                        'contexts': contexts
                     }
                     windows_data['windows'][split_name].append(window_info)
     
